@@ -1,2 +1,0 @@
-[console_scripts]
-vhost-cve-monitor = vhost_cve_monitor.cli:main
