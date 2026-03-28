@@ -1,0 +1,12 @@
+Subject: [Cerberus][ALERT][HIGH][web01] app.example.org django CVE-2024-27351
+
+Hostname: web01
+Date: 2026-03-28T18:15:00+00:00
+Vhost: app.example.org
+Stack: python
+Dependency: django
+Detected version: 3.2.18
+CVE / Advisory: CVE-2024-27351
+Severity: HIGH
+Summary: Potential denial of service in Django file upload handling.
+Recommendation: Review upstream fix and upgrade the affected component.

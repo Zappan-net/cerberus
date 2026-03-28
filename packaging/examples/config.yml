@@ -1,0 +1,43 @@
+nginx:
+  sites_enabled_dir: /etc/nginx/sites-enabled
+  include_globs:
+    - /etc/nginx/**/*.conf
+
+scanner:
+  default_roots:
+    - /home/webserv
+  scan_interval_minutes: 60
+  command_timeout_seconds: 120
+  network_timeout_seconds: 30
+  max_include_depth: 4
+  max_directory_walk_depth: 3
+  repeated_failure_threshold: 3
+
+notifications:
+  email_to:
+    - zappan.net@gmail.com
+  email_from: no-reply@zapandrok.com
+  method: sendmail
+  sendmail_path: /usr/sbin/sendmail
+  smtp_host: 127.0.0.1
+  smtp_port: 25
+  max_emails_per_run: 20
+  summary_only: true
+
+state:
+  state_dir: /var/lib/vhost-cve-monitor
+  database_path: /var/lib/vhost-cve-monitor/state.db
+  cve_cache_ttl_hours: 24
+  cache_grace_hours: 168
+
+logging:
+  level: INFO
+  file: /var/log/vhost-cve-monitor.log
+
+filters:
+  vhost_allowlist: []
+  vhost_blocklist:
+    - default
+    - _
+  path_allowlist: []
+  path_blocklist: []

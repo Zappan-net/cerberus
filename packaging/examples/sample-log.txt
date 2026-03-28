@@ -1,0 +1,6 @@
+2026-03-28 18:00:00 INFO vhost_cve_monitor.scanner Starting scan cycle
+2026-03-28 18:00:01 INFO vhost_cve_monitor.scanner Loaded 4 nginx vhosts
+2026-03-28 18:00:02 WARNING vhost_cve_monitor.audits pip-audit unavailable for /home/webserv/blog
+2026-03-28 18:00:03 INFO vhost_cve_monitor.scanner Prepared 1 vulnerability notification
+2026-03-28 18:00:03 INFO vhost_cve_monitor.notify Notification sent to zappan.net@gmail.com
+
