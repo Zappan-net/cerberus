@@ -15,8 +15,8 @@ scanner:
 
 notifications:
   email_to:
-    - zappan.net@gmail.com
-  email_from: no-reply@zapandrok.com
+    - ops@example.net
+  email_from: no-reply@example.net
   method: sendmail
   sendmail_path: /usr/sbin/sendmail
   smtp_host: 127.0.0.1

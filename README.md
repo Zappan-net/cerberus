@@ -111,6 +111,13 @@ sudo sh packaging/scripts/install.sh
 
 Example file: [packaging/examples/config.yml](/opt/cerberus/packaging/examples/config.yml)
 
+Configuration split:
+
+- repository default example: [packaging/examples/config.yml](/opt/cerberus/packaging/examples/config.yml)
+- live machine configuration: `/etc/vhost-cve-monitor/config.yml`
+
+The repository file is intentionally generic and safe to publish. The `/etc` file is the local deployment configuration and may contain real recipients, sender domains, and environment-specific tuning.
+
 Main keys:
 
 - `nginx.sites_enabled_dir`: nginx vhost directory to scan.

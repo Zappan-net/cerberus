@@ -16,6 +16,9 @@ if [ ! -f "$CONFIG_DIR/config.yml" ]; then
   install -m 0644 packaging/examples/config.yml "$CONFIG_DIR/config.yml"
 fi
 
+echo "Repository default config: packaging/examples/config.yml"
+echo "Local system config: $CONFIG_DIR/config.yml"
+
 install -m 0644 packaging/systemd/vhost-cve-monitor.service "$SYSTEMD_DIR/vhost-cve-monitor.service"
 install -m 0644 packaging/systemd/vhost-cve-monitor.timer "$SYSTEMD_DIR/vhost-cve-monitor.timer"
 install -m 0644 packaging/systemd/vhost-cve-monitor-cve-sync.service "$SYSTEMD_DIR/vhost-cve-monitor-cve-sync.service"
@@ -26,4 +29,3 @@ systemctl enable --now vhost-cve-monitor.timer
 systemctl enable --now vhost-cve-monitor-cve-sync.timer
 
 echo "Installation completed."
-
