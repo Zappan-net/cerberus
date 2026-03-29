@@ -8,6 +8,9 @@ version = "0.1.0"
 description = "Periodic nginx vhost security monitor for Debian servers"
 readme = "README.md"
 requires-python = ">=3.7"
+authors = [
+  {name = "Julien Wehrbach"},
+]
 dependencies = [
   "PyYAML>=3.13",
 ]

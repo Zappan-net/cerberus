@@ -3,6 +3,7 @@
 Cerberus is a maintainable Python 3 monitor for Debian servers that inspects nginx vhosts, detects the application stack behind each vhost, runs stack-specific security audits when possible, correlates detected versions with a local SQLite advisory cache, and sends email alerts only for new or materially changed findings.
 
 License: MIT. See [LICENSE](/opt/cerberus/LICENSE).
+Author: Julien Wehrbach.
 
 Detailed internal documentation is available in [docs/CODE_BREAKDOWN.md](/opt/cerberus/docs/CODE_BREAKDOWN.md).
 Architecture diagrams are available in [docs/DIAGRAMS.md](/opt/cerberus/docs/DIAGRAMS.md).
