@@ -1,0 +1,136 @@
+# Cerberus
+
+## Overview
+
+Cerberus is a maintainable Python 3 monitor for Debian servers that inspects nginx vhosts, detects the application stack behind each vhost, runs stack-specific security audits when possible, correlates detected versions with a local SQLite advisory cache, and sends email alerts only for new or materially changed findings.
+
+This export document is intended for editable office formats such as DOCX. It is derived from the repository README and extended with architecture diagrams.
+
+## Architecture Summary
+
+- nginx_parser reads `/etc/nginx/sites-enabled`, resolves useful includes, and extracts server names, roots, and upstream hints.
+- stack_detection applies explicit heuristics based on files and upstream names.
+- collectors reads package manifests, lockfiles, local virtualenvs, and service version markers.
+- audits runs optional ecosystem-native tools such as `npm audit`, `composer audit`, and `pip-audit`.
+- cve_db maintains a local SQLite advisory cache fed by targeted OSV queries.
+- state_store prevents alert spam by tracking previously sent findings and repeated failures.
+- notify delivers alerts through local sendmail or SMTP.
+- scanner orchestrates the full scan cycle.
+
+## Runtime Flow
+
+1. A systemd timer starts the oneshot service.
+2. The CLI loads the configuration and initializes logging.
+3. Cerberus parses nginx vhost files.
+4. Cerberus detects candidate stacks per vhost.
+5. Cerberus collects dependency versions.
+6. Cerberus correlates versions with the local CVE cache and optional external audit tools.
+7. Cerberus deduplicates notifications.
+8. Cerberus sends one digest or individual alerts according to configuration.
+
+## Sequence Diagram
+
+See the repository version in `docs/DIAGRAMS.md`.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant T as systemd timer
+    participant S as vhost-cve-monitor.service
+    participant C as CLI
+    participant SC as CerberusScanner
+    participant N as nginx_parser
+    participant D as stack_detection
+    participant A as audits/collectors
+    participant DB as SQLite cache/state
+    participant M as Mailer/Postfix
+
+    T->>S: trigger oneshot service
+    S->>C: exec vhost-cve-monitor scan-once
+    C->>SC: load config and start scan
+    SC->>N: parse /etc/nginx/sites-enabled
+    N-->>SC: VhostConfig[]
+    loop for each vhost
+        SC->>D: detect stacks and roots
+        D-->>SC: StackMatch[]
+        loop for each stack
+            SC->>A: collect dependencies
+            A->>DB: lookup cached advisories / refresh if needed
+            DB-->>A: Vulnerability[]
+            A-->>SC: StackScanResult
+        end
+        SC->>DB: deduplicate alerts / track failures
+    end
+    SC->>M: send notifications
+```
+
+## Functional Diagram
+
+See the repository version in `docs/DIAGRAMS.md`.
+
+```mermaid
+flowchart TD
+    A[nginx vhost files] --> B[nginx_parser]
+    B --> C[VhostConfig model]
+    C --> D[stack_detection]
+    D --> E[Stack matches]
+    E --> F[collectors]
+    F --> G[Dependency inventory]
+    G --> H[audits]
+    H --> I[Runtime audit findings]
+    G --> J[CVEDatabase]
+    J --> K[Local SQLite advisory cache]
+    K --> L[Correlated vulnerabilities]
+    I --> M[Scanner aggregation]
+    L --> M
+    M --> N[StateStore deduplication]
+    N --> O[NotificationEvent]
+    O --> P[Mailer]
+    P --> Q[sendmail / Postfix / SMTP]
+```
+
+## Deployment Model
+
+- Recommended scheduler: systemd timers
+- Scan service: `vhost-cve-monitor.service`
+- Scan timer: `vhost-cve-monitor.timer`
+- CVE refresh service: `vhost-cve-monitor-cve-sync.service`
+- CVE refresh timer: `vhost-cve-monitor-cve-sync.timer`
+
+## Configuration Split
+
+- Repository default example: `packaging/examples/config.yml`
+- Local machine configuration: `/etc/vhost-cve-monitor/config.yml`
+
+The repository file is generic and safe to publish. The `/etc` file contains deployment-specific recipients, sender domains, and tuning values.
+
+## Mail Policy
+
+- Alerts can be sent individually or grouped.
+- Current recommended mode: one digest per scan.
+- Messages are handed off to local sendmail/Postfix.
+- Delivery success to the final recipient depends on DNS authentication and remote provider policy.
+- `test-mail` can simulate explicit severities and categories.
+- Supported severities: `CRITICAL`, `HIGH`, `MEDIUM`, `WARNING`, `LOW`, `INFO`, `UNKNOWN`
+- Supported categories: `test`, `vulnerability`, `scan-failure`, `digest`
+- Example commands:
+  - `vhost-cve-monitor --config /etc/vhost-cve-monitor/config.yml test-mail --severity HIGH`
+  - `vhost-cve-monitor --config /etc/vhost-cve-monitor/config.yml test-mail --severity CRITICAL --category vulnerability`
+  - `vhost-cve-monitor --config /etc/vhost-cve-monitor/config.yml test-mail --severity WARNING --category scan-failure`
+  - `vhost-cve-monitor --config /etc/vhost-cve-monitor/config.yml test-mail --severity MEDIUM --category digest`
+- Live validation note:
+  - Proton accepted `zap.one` mail during testing
+  - Gmail still rejected `zap.one` until SPF and DKIM pass publicly
+
+## Known Limits
+
+- nginx parsing is intentionally pragmatic, not a full nginx interpreter.
+- Python dependency resolution is strongest when requirements are pinned or a local virtualenv exists.
+- Advisory quality depends on upstream OSV coverage and runtime audit tool availability.
+- Legacy or proxied deployments can still require stricter vhost-to-backend correlation logic.
+
+## Repository References
+
+- Internal code walkthrough: `docs/CODE_BREAKDOWN.md`
+- Diagrams: `docs/DIAGRAMS.md`
+- Main repository README: `README.md`

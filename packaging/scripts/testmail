@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+set -eu
+
+CONFIG_PATH="${CERBERUS_CONFIG:-/etc/vhost-cve-monitor/config.yml}"
+SLEEP_SECONDS="${CERBERUS_TESTMAIL_SLEEP:-3}"
+SEVERITIES="UNKNOWN INFO LOW WARNING MEDIUM HIGH CRITICAL"
+
+for severity in ${SEVERITIES}; do
+    echo "Sending ${severity} test notification using ${CONFIG_PATH}"
+    vhost-cve-monitor --config "${CONFIG_PATH}" test-mail --severity "${severity}"
+    sleep "${SLEEP_SECONDS}"
+done

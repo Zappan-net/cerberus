@@ -27,7 +27,20 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("scan-once", help="Run one full scan")
     subparsers.add_parser("daemon", help="Run an internal periodic loop")
     subparsers.add_parser("sync-cve", help="Refresh cached advisories for known packages")
-    subparsers.add_parser("test-mail", help="Send a test mail")
+    test_mail_parser = subparsers.add_parser("test-mail", help="Send a test mail")
+    test_mail_parser.add_argument(
+        "--severity",
+        default="INFO",
+        choices=["CRITICAL", "HIGH", "MEDIUM", "WARNING", "LOW", "INFO", "UNKNOWN"],
+        type=str.upper,
+        help="Severity to simulate in the test mail",
+    )
+    test_mail_parser.add_argument(
+        "--category",
+        default="test",
+        choices=["test", "vulnerability", "scan-failure", "digest"],
+        help="Notification category to simulate in the test mail",
+    )
     return parser
 
 
@@ -55,7 +68,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(json.dumps({"refreshed_packages": refreshed}, indent=2))
         return 0
     if args.command == "test-mail":
-        event = scanner.send_test_mail()
+        event = scanner.send_test_mail(severity=args.severity, category=args.category)
         print(json.dumps({"subject": event.subject}, indent=2))
         return 0
     if args.command == "daemon":

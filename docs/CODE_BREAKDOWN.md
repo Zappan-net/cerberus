@@ -33,6 +33,8 @@ Cerberus supports three practical execution modes:
   Refreshes cached vulnerability entries for package/version tuples already known in the local database.
 - `daemon`
   Runs an internal loop with sleep intervals.
+- `test-mail`
+  Sends a synthetic notification to validate severity rendering, headers, categories, recipients, and transport behavior.
 
 On Debian, the recommended scheduling model is not the internal daemon loop. It is:
 
@@ -211,8 +213,15 @@ Current heuristics:
 Path resolution behavior:
 
 - start from nginx `root` if present
-- also consider fallback roots from config
+- if the root points to a build output directory such as `build/` or `dist/`, also inspect the parent directory when it clearly contains application manifests
+- consider fallback roots from config only for FastCGI or uWSGI style vhosts that do not expose an explicit `root`
 - walk down the tree up to `max_directory_walk_depth`
+
+Important guardrails:
+
+- `redirect-only` vhosts are skipped entirely
+- proxy-only vhosts without an explicit local root do not scan broad fallback roots such as `/home/webserv`
+- ignored directories such as `node_modules`, `vendor`, `.venv`, `venv`, `__pycache__`, and `.git` are pruned from traversal
 
 Why this is important:
 
@@ -417,10 +426,17 @@ Behavior:
 
 - builds a standard `EmailMessage`
 - includes hostname header
+- adds severity-aware headers such as `X-Cerberus-Severity`, `X-Priority`, `Priority`, and `Importance`
 - honors dry-run mode
 - logs transport choice in verbose mode
 
 Dry-run mode is important because it lets you validate the full scan path without spamming real recipients.
+
+Operational note:
+
+- successful local submission only means Cerberus handed the message to the local MTA
+- remote delivery still depends on SPF, DKIM, recipient policy, and throttling
+- this was observed during live validation: Proton accepted `zap.one` test messages while Gmail rejected them until public authentication passes
 
 ### 4.11 [audits.py](/opt/cerberus/src/vhost_cve_monitor/audits.py)
 
@@ -516,7 +532,9 @@ Issue fingerprints are built from:
 - vhost
 - stack
 - dependency
+- dependency version
 - advisory id
+- source file
 
 Failure fingerprints are built from:
 
@@ -529,6 +547,24 @@ Failure fingerprints are built from:
 This is a simple sleep loop driven by `scan_interval_minutes`.
 
 It exists, but the recommended deployment pattern remains `systemd timer`.
+
+Additional test-mail behavior:
+
+- `send_test_mail()` accepts explicit severities and categories
+- supported categories:
+  - `test`
+  - `vulnerability`
+  - `scan-failure`
+  - `digest`
+- supported severities:
+  - `CRITICAL`
+  - `HIGH`
+  - `MEDIUM`
+  - `WARNING`
+  - `LOW`
+  - `INFO`
+  - `UNKNOWN`
+- digest test messages include synthetic grouped alert lines
 
 ### 4.13 [cli.py](/opt/cerberus/src/vhost_cve_monitor/cli.py)
 
@@ -547,6 +583,11 @@ Supported subcommands:
 - `daemon`
 - `sync-cve`
 - `test-mail`
+
+Additional `test-mail` options:
+
+- `--severity`
+- `--category`
 
 The CLI does very little business logic. It mainly wires together:
 
@@ -704,6 +745,10 @@ The implementation prefers precise versions and avoids guessing too much. That m
 
 Different upstream tools format severity differently. The current implementation does not yet provide a strong unified severity mapping layer.
 
+### Proxy-to-backend attribution stays heuristic
+
+Cerberus now avoids broad fallback-root scans for proxy-only vhosts, and it can walk from a static `build/` root back to an application parent. That still remains heuristic. It does not resolve arbitrary reverse-proxy targets into concrete project roots automatically.
+
 ### Cache growth is unbounded
 
 The advisory cache grows with the number of seen package/version tuples. For most deployments that remains small, but there is no pruning strategy yet.
@@ -760,6 +805,9 @@ Useful commands:
 
 ```bash
 vhost-cve-monitor --verbose --config /etc/vhost-cve-monitor/config.yml --dry-run scan-once
+vhost-cve-monitor --config /etc/vhost-cve-monitor/config.yml test-mail --severity HIGH
+vhost-cve-monitor --config /etc/vhost-cve-monitor/config.yml test-mail --severity WARNING --category scan-failure
+vhost-cve-monitor --config /etc/vhost-cve-monitor/config.yml test-mail --severity MEDIUM --category digest
 journalctl -u vhost-cve-monitor.service -n 200 --no-pager
 journalctl -u vhost-cve-monitor-cve-sync.service -n 200 --no-pager
 sqlite3 /var/lib/vhost-cve-monitor/state.db '.tables'

@@ -56,6 +56,7 @@ class Dependency:
     name: str
     version: str
     source: str
+    source_line: Optional[int] = None
     locations: List[str] = field(default_factory=list)
 
 

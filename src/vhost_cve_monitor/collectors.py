@@ -19,6 +19,20 @@ def _load_json(path: Path) -> Optional[Union[Dict, List]]:
         return None
 
 
+def _find_line_number(path: Path, patterns: List[str]) -> Optional[int]:
+    try:
+        lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
+    except OSError:
+        return None
+    for index, line in enumerate(lines, start=1):
+        if all(pattern in line for pattern in patterns):
+            return index
+    for index, line in enumerate(lines, start=1):
+        if any(pattern in line for pattern in patterns):
+            return index
+    return None
+
+
 def collect_node_dependencies(stack: StackMatch) -> Tuple[List[Dependency], List[ScanFailure]]:
     dependencies = []
     failures = []
@@ -46,6 +60,7 @@ def collect_node_dependencies(stack: StackMatch) -> Tuple[List[Dependency], List
                                 name=name,
                                 version=str(version),
                                 source=str(manifest),
+                                source_line=_find_line_number(manifest, ['"{}"'.format(name), str(version)]),
                                 locations=[package_path],
                             )
                         )
@@ -59,6 +74,7 @@ def collect_node_dependencies(stack: StackMatch) -> Tuple[List[Dependency], List
                                 name=name,
                                 version=str(version),
                                 source=str(manifest),
+                                source_line=_find_line_number(manifest, ['"{}"'.format(name), str(version)]),
                             )
                         )
     elif package_json_path.exists():
@@ -73,6 +89,7 @@ def collect_node_dependencies(stack: StackMatch) -> Tuple[List[Dependency], List
                                 name=name,
                                 version=version.lstrip("^~<>= "),
                                 source=str(package_json_path),
+                                source_line=_find_line_number(package_json_path, ['"{}"'.format(name)]),
                             )
                         )
     else:
@@ -102,6 +119,7 @@ def collect_composer_dependencies(stack: StackMatch) -> Tuple[List[Dependency], 
                                 name=name,
                                 version=str(version).lstrip("v"),
                                 source=str(lock_path),
+                                source_line=_find_line_number(lock_path, ['"{}"'.format(name), str(version)]),
                             )
                         )
     elif json_path.exists():
@@ -117,6 +135,7 @@ def collect_composer_dependencies(stack: StackMatch) -> Tuple[List[Dependency], 
                             name=name,
                             version=str(version).lstrip("^~v"),
                             source=str(json_path),
+                            source_line=_find_line_number(json_path, ['"{}"'.format(name)]),
                         )
                     )
     else:
@@ -143,7 +162,7 @@ def collect_python_dependencies(stack: StackMatch, timeout: int) -> Tuple[List[D
     requirements_path = root / "requirements.txt"
     poetry_lock = root / "poetry.lock"
     if requirements_path.exists():
-        for line in requirements_path.read_text(encoding="utf-8", errors="ignore").splitlines():
+        for index, line in enumerate(requirements_path.read_text(encoding="utf-8", errors="ignore").splitlines(), start=1):
             parsed = _parse_requirement_line(line)
             if parsed:
                 name, version = parsed
@@ -153,15 +172,18 @@ def collect_python_dependencies(stack: StackMatch, timeout: int) -> Tuple[List[D
                         name=name,
                         version=version,
                         source=str(requirements_path),
+                        source_line=index,
                     )
                 )
     if poetry_lock.exists():
         current_name = None
         current_version = None
-        for line in poetry_lock.read_text(encoding="utf-8", errors="ignore").splitlines():
+        current_line = None
+        for index, line in enumerate(poetry_lock.read_text(encoding="utf-8", errors="ignore").splitlines(), start=1):
             stripped = line.strip()
             if stripped.startswith("name = "):
                 current_name = stripped.split("=", 1)[1].strip().strip('"')
+                current_line = index
             elif stripped.startswith("version = "):
                 current_version = stripped.split("=", 1)[1].strip().strip('"')
             elif not stripped and current_name and current_version:
@@ -171,10 +193,12 @@ def collect_python_dependencies(stack: StackMatch, timeout: int) -> Tuple[List[D
                         name=current_name,
                         version=current_version,
                         source=str(poetry_lock),
+                        source_line=current_line,
                     )
                 )
                 current_name = None
                 current_version = None
+                current_line = None
     venv_candidates = [root / ".venv/bin/python", root / "venv/bin/python"]
     for python_bin in venv_candidates:
         if python_bin.exists():
@@ -190,6 +214,7 @@ def collect_python_dependencies(stack: StackMatch, timeout: int) -> Tuple[List[D
                                 name=name,
                                 version=version,
                                 source=str(python_bin),
+                                source_line=None,
                             )
                         )
             else:
@@ -228,6 +253,7 @@ def collect_gitea_dependencies(stack: StackMatch, timeout: int) -> Tuple[List[De
                 name="code.gitea.io/gitea",
                 version=version,
                 source=source or "unknown",
+                source_line=1 if source and source.endswith("VERSION") else None,
             )
         )
     else:

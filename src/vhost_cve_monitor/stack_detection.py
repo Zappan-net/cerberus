@@ -16,10 +16,37 @@ IGNORED_DIR_NAMES = {
     "__pycache__",
     ".git",
 }
+BUILD_OUTPUT_DIR_NAMES = {"build", "dist", "public", "www", "htdocs", "html"}
 
 
 def _exists(root: Path, relative: str) -> bool:
     return (root / relative).exists()
+
+
+def _is_application_manifest_root(path: Path) -> bool:
+    markers = (
+        "composer.json",
+        "composer.lock",
+        "package.json",
+        "package-lock.json",
+        "npm-shrinkwrap.json",
+        "requirements.txt",
+        "pyproject.toml",
+        "poetry.lock",
+        "manage.py",
+        "custom/conf/app.ini",
+        "VERSION",
+    )
+    return any(_exists(path, marker) for marker in markers)
+
+
+def _root_variants(root: Path) -> List[Path]:
+    candidates = [root]
+    if root.name.lower() in BUILD_OUTPUT_DIR_NAMES:
+        parent = root.parent
+        if parent != root and _is_application_manifest_root(parent):
+            candidates.append(parent)
+    return candidates
 
 
 def _walk_candidates(root: Path, max_depth: int) -> List[Path]:
@@ -51,8 +78,8 @@ def _walk_candidates(root: Path, max_depth: int) -> List[Path]:
 def _detect_root_candidates(vhost: VhostConfig, config: Dict) -> List[Path]:
     candidates = []
     if vhost.primary_root:
-        candidates.append(Path(vhost.primary_root))
-    should_use_default_roots = bool(vhost.primary_root or vhost.proxy_passes or vhost.fastcgi_passes or vhost.uwsgi_passes)
+        candidates.extend(_root_variants(Path(vhost.primary_root)))
+    should_use_default_roots = bool((not vhost.primary_root) and (vhost.fastcgi_passes or vhost.uwsgi_passes))
     if should_use_default_roots:
         for root_hint in config["scanner"].get("default_roots", []):
             hint_path = Path(root_hint)

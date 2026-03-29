@@ -3,6 +3,8 @@
 Cerberus is a maintainable Python 3 monitor for Debian servers that inspects nginx vhosts, detects the application stack behind each vhost, runs stack-specific security audits when possible, correlates detected versions with a local SQLite advisory cache, and sends email alerts only for new or materially changed findings.
 
 Detailed internal documentation is available in [docs/CODE_BREAKDOWN.md](/opt/cerberus/docs/CODE_BREAKDOWN.md).
+Architecture diagrams are available in [docs/DIAGRAMS.md](/opt/cerberus/docs/DIAGRAMS.md).
+An editable office export source is available in [docs/README_EXPORT.md](/opt/cerberus/docs/README_EXPORT.md).
 
 ## Architecture
 
@@ -71,7 +73,12 @@ The project is split into explicit layers:
 │       ├── state_store.py
 │       └── subprocess_utils.py
 └── tests
+    ├── test_cli.py
+    ├── test_collectors.py
     ├── test_nginx_parser.py
+    ├── test_scanner_digest.py
+    ├── test_scanner_test_mail.py
+    ├── test_stack_detection.py
     └── test_state_store.py
 ```
 
@@ -167,6 +174,37 @@ Test mail:
 vhost-cve-monitor --config /etc/vhost-cve-monitor/config.yml test-mail
 ```
 
+Test mail with explicit severity:
+
+```bash
+vhost-cve-monitor --config /etc/vhost-cve-monitor/config.yml test-mail --severity HIGH
+```
+
+Test mail with explicit severity and category:
+
+```bash
+vhost-cve-monitor --config /etc/vhost-cve-monitor/config.yml test-mail --severity CRITICAL --category vulnerability
+vhost-cve-monitor --config /etc/vhost-cve-monitor/config.yml test-mail --severity WARNING --category scan-failure
+vhost-cve-monitor --config /etc/vhost-cve-monitor/config.yml test-mail --severity MEDIUM --category digest
+```
+
+Supported `test-mail` categories:
+
+- `test`
+- `vulnerability`
+- `scan-failure`
+- `digest`
+
+Supported `test-mail` severities:
+
+- `CRITICAL`
+- `HIGH`
+- `MEDIUM`
+- `WARNING`
+- `LOW`
+- `INFO`
+- `UNKNOWN`
+
 Internal daemon mode:
 
 ```bash
@@ -210,6 +248,13 @@ Mail presentation:
 - normalized subject prefix with `ALERT` and severity level
 - HTML version with color-coded severity banner
 - plain text fallback for minimal mail clients
+- severity-aware headers such as `X-Cerberus-Severity`, `X-Priority`, `Priority`, and `Importance`
+
+Operational note:
+
+- a successful Cerberus send means local handoff to `sendmail` or SMTP completed
+- final delivery still depends on remote acceptance and public mail authentication
+- in the current live validation, Proton accepted `zap.one` mail while Gmail still rejected it until SPF and DKIM pass publicly
 
 Example: [packaging/examples/sample-email.txt](/opt/cerberus/packaging/examples/sample-email.txt)
 
@@ -227,7 +272,11 @@ PYTHONPATH=src python3 -m unittest discover -s tests -v
 
 Covered critical parts:
 
+- CLI parsing for `test-mail` severity and category simulation
+- dependency source line preservation where available
+- digest deduplication and highest-severity rendering
 - nginx config parsing
+- stack detection guardrails for redirect-only vhosts, proxy-only vhosts, and build-root parent detection
 - alert deduplication and repeated-failure threshold logic
 
 ## Example execution
