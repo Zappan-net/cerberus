@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Dict, List
 
@@ -16,6 +17,7 @@ from .models import AuditIssue, Dependency, ScanFailure, StackMatch, StackScanRe
 from .subprocess_utils import command_exists, run_command
 
 LOGGER = logging.getLogger(__name__)
+STANDARD_VULN_RE = re.compile(r"(GHSA-[A-Za-z0-9-]+|CVE-\d{4}-\d+)")
 
 
 def _local_db_issues(
@@ -98,7 +100,7 @@ def _parse_npm_audit(payload: Dict, dependencies: List[Dependency]) -> List[Audi
         for entry in via_entries:
             if not isinstance(entry, dict):
                 continue
-            vuln_id = entry.get("source") or entry.get("url") or f"npm-{package_name}"
+            vuln_id = _normalize_npm_vuln_id(entry, package_name)
             issues.append(
                 AuditIssue(
                     dependency=dependency,
@@ -113,6 +115,22 @@ def _parse_npm_audit(payload: Dict, dependencies: List[Dependency]) -> List[Audi
                 )
             )
     return issues
+
+
+def _normalize_npm_vuln_id(entry: Dict, package_name: str) -> str:
+    source = str(entry.get("source") or "").strip()
+    url = str(entry.get("url") or "").strip()
+    for candidate in (source, url):
+        match = STANDARD_VULN_RE.search(candidate)
+        if match:
+            return match.group(1)
+    if source.isdigit():
+        return f"NPM-ADVISORY-{source}"
+    if url:
+        advisory_id = url.rstrip("/").rsplit("/", 1)[-1]
+        if advisory_id.isdigit():
+            return f"NPM-ADVISORY-{advisory_id}"
+    return f"NPM-{package_name}"
 
 
 def _scan_composer(stack: StackMatch, cve_db: CVEDatabase, timeout: int, allow_network: bool) -> StackScanResult:

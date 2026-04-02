@@ -117,6 +117,37 @@ Or use the helper:
 sudo sh packaging/scripts/install.sh
 ```
 
+### Upgrade existing installations
+
+If Cerberus is already installed on the machine, update it from the repository root:
+
+```bash
+cd /opt/cerberus
+python3 -m pip install .
+```
+
+If you changed packaged files such as systemd units, reload systemd and restart the timers:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl restart vhost-cve-monitor.timer
+sudo systemctl restart vhost-cve-monitor-cve-sync.timer
+```
+
+If you changed mail authentication or local MTA integration, also reload the relevant services:
+
+```bash
+sudo systemctl restart opendkim
+sudo systemctl reload postfix
+```
+
+Recommended post-upgrade checks:
+
+```bash
+vhost-cve-monitor --config /etc/vhost-cve-monitor/config.yml --dry-run scan-once
+vhost-cve-monitor --config /etc/vhost-cve-monitor/config.yml test-mail --severity HIGH
+```
+
 ## Configuration
 
 Example file: [packaging/examples/config.yml](/opt/cerberus/packaging/examples/config.yml)
