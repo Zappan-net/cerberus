@@ -5,6 +5,7 @@ PROJECT_DIR="/opt/cerberus"
 VENV_DIR="${PROJECT_DIR}/.venv"
 CONFIG_DIR="/etc/vhost-cve-monitor"
 CONFIG_FILE="${CONFIG_DIR}/config.yml"
+EXAMPLE_CONFIG="/usr/share/cerberus/config.yml"
 STATE_DIR="/var/lib/vhost-cve-monitor"
 WRAPPER_DIR="/usr/local/bin"
 SYSTEMCTL="${SYSTEMCTL:-systemctl}"
@@ -17,6 +18,52 @@ create_wrapper() {
 exec "$target" "\$@"
 EOF
     chmod 0755 "$wrapper"
+}
+
+create_testmail_script() {
+    script_path="$1"
+    cat > "$script_path" <<'EOF'
+#!/bin/sh
+set -eu
+
+CONFIG_PATH="${CERBERUS_CONFIG:-/etc/vhost-cve-monitor/config.yml}"
+SLEEP_SECONDS="${CERBERUS_TESTMAIL_SLEEP:-3}"
+CERBERUS_BIN="${CERBERUS_BIN:-/opt/cerberus/.venv/bin/vhost-cve-monitor}"
+DEFAULT_SEVERITIES="UNKNOWN INFO LOW WARNING MEDIUM HIGH CRITICAL"
+
+is_valid_severity() {
+    case "$1" in
+        UNKNOWN|INFO|LOW|WARNING|MEDIUM|HIGH|CRITICAL) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+normalize_severity() {
+    printf '%s' "$1" | tr '[:lower:]' '[:upper:]'
+}
+
+if [ "$#" -eq 0 ]; then
+    set -- ${DEFAULT_SEVERITIES}
+fi
+
+remaining="$#"
+for raw_severity in "$@"; do
+    severity="$(normalize_severity "$raw_severity")"
+    if ! is_valid_severity "$severity"; then
+        echo "Invalid severity: ${raw_severity}" >&2
+        echo "Valid severities: UNKNOWN INFO LOW WARNING MEDIUM HIGH CRITICAL" >&2
+        exit 1
+    fi
+
+    echo "test-mail ${severity}"
+    "${CERBERUS_BIN}" --config "${CONFIG_PATH}" test-mail --severity "${severity}"
+    remaining=$((remaining - 1))
+    if [ "${remaining}" -gt 0 ]; then
+        sleep "${SLEEP_SECONDS}"
+    fi
+done
+EOF
+    chmod 0755 "$script_path"
 }
 
 if ! python3 -m venv --help >/dev/null 2>&1; then
@@ -33,13 +80,13 @@ if [ ! -d "$VENV_DIR" ]; then
 fi
 
 "${VENV_DIR}/bin/python" -m pip install --no-deps --upgrade "$PROJECT_DIR"
-install -m 0755 "${PROJECT_DIR}/packaging/scripts/testmail" "${VENV_DIR}/bin/vhost-cve-monitor-testmail"
+create_testmail_script "${VENV_DIR}/bin/vhost-cve-monitor-testmail"
 
 create_wrapper "${VENV_DIR}/bin/vhost-cve-monitor" "${WRAPPER_DIR}/vhost-cve-monitor"
 create_wrapper "${VENV_DIR}/bin/vhost-cve-monitor-testmail" "${WRAPPER_DIR}/vhost-cve-monitor-testmail"
 
 if [ ! -f "$CONFIG_FILE" ]; then
-    install -m 0644 "${PROJECT_DIR}/packaging/examples/config.yml" "$CONFIG_FILE"
+    install -m 0644 "$EXAMPLE_CONFIG" "$CONFIG_FILE"
 fi
 
 if command -v "$SYSTEMCTL" >/dev/null 2>&1; then

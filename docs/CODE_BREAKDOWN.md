@@ -723,6 +723,8 @@ Packaging note:
 - `/usr/local/bin/vhost-cve-monitor` and `/usr/local/bin/vhost-cve-monitor-testmail` are thin wrappers for operators
 - the repository also ships a minimal `debian/` packaging layout; the package installs files under `/opt/cerberus` and lets `postinst` create or refresh the venv
 - the Debian package uses `--system-site-packages` plus `python3-yaml` to avoid network-dependent `pip` resolution during package installation
+- the example config is shipped under `/usr/share/cerberus/config.yml` so maintainer scripts do not depend on repository-only paths during package installation
+- notification transport failures such as a missing `/usr/sbin/sendmail` are treated as operational delivery errors, not as internal Cerberus crashes
 
 ## 8. Logging and observability
 

@@ -16,4 +16,6 @@ debian/files
 debian/tmp/
 debian/*.debhelper
 debian/*.substvars
-debian/vhost-cve-monitor/
+debian/cerberus/
+debian/cerberus/
+README-deb.txt

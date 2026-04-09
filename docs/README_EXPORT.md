@@ -139,6 +139,7 @@ If Cerberus is already installed on a machine:
 - admin-facing wrappers are refreshed in `/usr/local/bin/`
 - a minimal Debian package is also available through `dpkg-buildpackage -us -uc`, with the same runtime model under `/opt/cerberus/.venv`
 - the Debian package relies on `python3-yaml` and a venv created with `--system-site-packages`, so `postinst` does not need to download Python dependencies
+- the Debian package ships its example config in `/usr/share/cerberus/config.yml` and only copies it into `/etc/vhost-cve-monitor/config.yml` when no local config exists
 - run `systemctl daemon-reload` after changing packaged unit files
 - use `systemctl enable --now ...timer` to ensure timers are enabled
 - if timers were already active, `daemon-reload` is usually enough unless the unit files changed structurally
@@ -146,6 +147,7 @@ If Cerberus is already installed on a machine:
 - reload `opendkim` and `postfix` if mail authentication or local MTA integration changed
 
 Default deployments keep using local sendmail/Postfix. If you keep the example config unchanged, ensure `/usr/sbin/sendmail` exists on the host.
+If it does not, Cerberus reports a concise mail-delivery error instead of cascading through an internal Python traceback.
 
 ## Known Limits
 

@@ -23,6 +23,7 @@ from .cve_db import CVEDatabase
 from .models import AuditIssue, NotificationEvent, ScanFailure, VhostScanResult
 from .nginx_parser import load_vhosts
 from .notify import Mailer
+from .notify import NotificationDeliveryError
 from .stack_detection import detect_stacks
 from .state_store import StateStore
 
@@ -200,39 +201,46 @@ class CerberusScanner:
     def _build_digest_notification(self, events: List[NotificationEvent], subject_all: bool = False) -> NotificationEvent:
         hostname = socket.gethostname()
         now = datetime.now(timezone.utc)
-        highest = "UNKNOWN"
-        for event in events:
-            highest = strongest_severity(highest, str(event.metadata.get("severity", "UNKNOWN")).upper())
         digest_items = self._digest_items(events)
+        highest = self._digest_highest_severity(digest_items)
+        severity_groups = self._group_digest_items_by_severity(digest_items)
+        breakdown = self._digest_breakdown(severity_groups)
         lines = [
             f"Hostname: {hostname}",
             f"Date: {now.isoformat()}",
-            f"Events summarized: {len(digest_items)}",
+            f"Findings: {len(digest_items)}",
             f"Highest severity: {highest}",
+            f"Breakdown: {breakdown}",
             "Summary: additional alerts were grouped to avoid flooding the destination mailbox.",
-            "Recommendation: upgrade the affected components to the fixed versions shown below, then rebuild lockfiles or dependencies before redeploying.",
-            "",
-            "Included alerts:",
         ]
-        for item in digest_items:
-            source_suffix = ""
-            if item["source_path"] and item["source_line"]:
-                source_suffix = " [{}:{}]".format(item["source_path"], item["source_line"])
-            elif item["source_path"]:
-                source_suffix = " [{}]".format(item["source_path"])
-            fixed_suffix = ""
-            if item["fixed_version"]:
-                fixed_suffix = " -> fixed in {}".format(item["fixed_version"])
-            lines.append(
-                "- {} | {} {}{} | {}{}".format(
-                    item["vhost"],
-                    item["dependency"],
-                    item["version"],
-                    fixed_suffix,
-                    item["vuln_id"],
-                    source_suffix,
-                )
+        for severity, items in severity_groups:
+            lines.extend(
+                [
+                    "",
+                    "{} ({})".format(severity, len(items)),
+                    "Recommendation: {}".format(self._digest_block_recommendation(severity, items)),
+                ]
             )
+            for item in items:
+                source_suffix = ""
+                if item["source_path"] and item["source_line"]:
+                    source_suffix = " [{}:{}]".format(item["source_path"], item["source_line"])
+                elif item["source_path"]:
+                    source_suffix = " [{}]".format(item["source_path"])
+                fixed_suffix = ""
+                if item["fixed_version"]:
+                    fixed_suffix = " -> fixed in {}".format(item["fixed_version"])
+                lines.append(
+                    "- {} | [{}] {} {}{} | {}{}".format(
+                        item["vhost"],
+                        severity,
+                        item["dependency"],
+                        item["version"],
+                        fixed_suffix,
+                        item["vuln_id"],
+                        source_suffix,
+                    )
+                )
         subject = "[Cerberus][{}][{}] {} alerts".format(highest, hostname, len(digest_items))
         return NotificationEvent(
             category="digest",
@@ -244,8 +252,7 @@ class CerberusScanner:
         )
 
     def _digest_items(self, events: List[NotificationEvent]) -> List[Dict[str, object]]:
-        items = []
-        seen = set()
+        items = {}
         for event in events:
             metadata = event.metadata
             item = {
@@ -257,6 +264,9 @@ class CerberusScanner:
                 "fixed_version": _clean_text(metadata.get("fixed_version", "")) or None,
                 "source_path": metadata.get("source_path"),
                 "source_line": metadata.get("source_line"),
+                "category": event.category,
+                "ecosystem": _clean_text(metadata.get("ecosystem", "")) or None,
+                "stack": _clean_text(metadata.get("stack", "")) or None,
             }
             key = (
                 item["vhost"],
@@ -267,12 +277,14 @@ class CerberusScanner:
                 item["source_path"],
                 item["source_line"],
             )
-            if key in seen:
+            if key in items:
+                items[key]["severity"] = strongest_severity(str(items[key]["severity"]), str(item["severity"]))
+                if not items[key]["fixed_version"] and item["fixed_version"]:
+                    items[key]["fixed_version"] = item["fixed_version"]
                 continue
-            seen.add(key)
-            items.append(item)
+            items[key] = item
         return sorted(
-            items,
+            items.values(),
             key=lambda item: (
                 -SEVERITY_ORDER.get(str(item["severity"]).upper(), -1),
                 str(item["vhost"]),
@@ -280,6 +292,107 @@ class CerberusScanner:
                 str(item["version"]),
                 str(item["vuln_id"]),
             ),
+        )
+
+    def _digest_highest_severity(self, digest_items: List[Dict[str, object]]) -> str:
+        highest = "UNKNOWN"
+        for item in digest_items:
+            highest = strongest_severity(highest, str(item.get("severity", "UNKNOWN")).upper())
+        return highest
+
+    def _group_digest_items_by_severity(self, digest_items: List[Dict[str, object]]) -> List[tuple[str, List[Dict[str, object]]]]:
+        grouped = {}
+        for item in digest_items:
+            severity = str(item.get("severity", "UNKNOWN")).upper()
+            grouped.setdefault(severity, []).append(item)
+        ordered = []
+        for severity, items in grouped.items():
+            ordered.append(
+                (
+                    severity,
+                    sorted(
+                        items,
+                        key=lambda item: (
+                            str(item["vhost"]),
+                            str(item["dependency"]),
+                            str(item["version"]),
+                            str(item["vuln_id"]),
+                        ),
+                    ),
+                )
+            )
+        return sorted(ordered, key=lambda entry: -SEVERITY_ORDER.get(entry[0], -1))
+
+    def _digest_breakdown(self, severity_groups: List[tuple[str, List[Dict[str, object]]]]) -> str:
+        return ", ".join("{} {}".format(len(items), severity) for severity, items in severity_groups) or "0 UNKNOWN"
+
+    def _digest_block_recommendation(self, severity: str, items: List[Dict[str, object]]) -> str:
+        categories = {str(item.get("category") or "") for item in items}
+        ecosystems = {
+            str(item.get("ecosystem") or "").lower()
+            for item in items
+            if str(item.get("ecosystem") or "").strip()
+        }
+        if categories == {"scan-failure"}:
+            return (
+                "stabilize the failing audit commands or project trees in this block first, then rerun the scan "
+                "to confirm the failures are gone."
+            )
+        if categories == {"internal-error"}:
+            return (
+                "treat these as Cerberus execution failures: inspect the local logs first and report a reproducible "
+                "bug if the failure persists."
+            )
+        if len(ecosystems) == 1:
+            ecosystem = next(iter(ecosystems))
+            if ecosystem == "npm":
+                if severity in ("CRITICAL", "HIGH"):
+                    return (
+                        "prioritize these npm dependency upgrades first, apply the fixed versions shown below, "
+                        "review `package-lock.json` drift carefully, and verify runtime usage before deployment."
+                    )
+                return (
+                    "schedule these npm dependency upgrades, rebuild `package-lock.json`, and validate runtime usage "
+                    "before deployment."
+                )
+            if ecosystem == "pypi":
+                if severity in ("CRITICAL", "HIGH"):
+                    return (
+                        "prioritize these Python package updates first, refresh requirements or lockfiles, rerun "
+                        "`pip-audit`, and confirm the affected imports are used at runtime."
+                    )
+                return (
+                    "schedule these Python package updates, refresh requirements or lockfiles, rerun `pip-audit`, "
+                    "and validate runtime usage before deployment."
+                )
+            if ecosystem == "packagist":
+                if severity in ("CRITICAL", "HIGH"):
+                    return (
+                        "prioritize these Composer updates first, review `composer.lock` changes carefully, and "
+                        "confirm the affected packages are used in the deployed application."
+                    )
+                return (
+                    "schedule these Composer dependency updates, review `composer.lock`, and validate application "
+                    "behavior before deployment."
+                )
+            if ecosystem == "go":
+                return (
+                    "upgrade the Go modules in this block to the fixed versions below, refresh the module graph, "
+                    "and confirm the affected packages are part of the deployed binary."
+                )
+            if ecosystem == "crates.io":
+                return (
+                    "update the Rust crates in this block to the fixed versions below, refresh `Cargo.lock`, and "
+                    "verify the affected crates are part of the production build."
+                )
+        if severity in ("CRITICAL", "HIGH"):
+            return (
+                "prioritize the findings in this block first, upgrade each affected component to the listed fixed "
+                "version, rebuild the relevant dependency state, and verify runtime usage before deployment."
+            )
+        return (
+            "schedule the findings in this block for upgrade, apply the listed fixed versions, rebuild the relevant "
+            "dependency state, and validate runtime usage before deployment."
         )
 
     def _normalize_findings(self, occurrences: List[Dict]) -> List[NormalizedFinding]:
@@ -523,7 +636,15 @@ class CerberusScanner:
         )
         for notification in self._prepare_notifications_for_delivery([event]):
             LOGGER.info("Sending %s notification: %s", notification.category, notification.subject)
-            self.mailer.send(notification)
+            try:
+                self.mailer.send(notification)
+            except NotificationDeliveryError as delivery_error:
+                LOGGER.error(
+                    "Unable to send internal-error notification during %s: %s",
+                    operation,
+                    delivery_error,
+                )
+                return event
         return event
 
     def send_test_mail(self, severity: str = "INFO", category: str = "test") -> NotificationEvent:

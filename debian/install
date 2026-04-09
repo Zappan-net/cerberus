@@ -2,10 +2,11 @@ README.md opt/cerberus/
 CHANGELOG.md opt/cerberus/
 LICENSE opt/cerberus/
 pyproject.toml opt/cerberus/
-src/ opt/cerberus/src/
-packaging/ opt/cerberus/packaging/
-docs/ opt/cerberus/docs/
-tests/ opt/cerberus/tests/
+src/ opt/cerberus/
+packaging/ opt/cerberus/
+docs/ opt/cerberus/
+tests/ opt/cerberus/
+packaging/examples/config.yml usr/share/cerberus/
 packaging/systemd/vhost-cve-monitor.service lib/systemd/system/
 packaging/systemd/vhost-cve-monitor.timer lib/systemd/system/
 packaging/systemd/vhost-cve-monitor-cve-sync.service lib/systemd/system/

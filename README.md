@@ -146,13 +146,14 @@ The package installs:
 - the project files under `/opt/cerberus`
 - systemd units under `/lib/systemd/system`
 - runtime wrappers in `/usr/local/bin`
+- the packaged example config under `/usr/share/cerberus/config.yml`
 
 Its `postinst` script then:
 
 - creates or reuses `/opt/cerberus/.venv`
 - creates that venv with `--system-site-packages`
 - installs or refreshes Cerberus inside that venv without downloading Python dependencies at package-install time
-- preserves `/etc/vhost-cve-monitor/config.yml` if it already exists
+- installs `/etc/vhost-cve-monitor/config.yml` from `/usr/share/cerberus/config.yml` only if no live config exists yet
 - enables the timers
 
 ### Upgrade existing installations
@@ -214,6 +215,7 @@ The default example config assumes a simple local Postfix/sendmail setup with:
 - `notifications.email_from: cerberus@localhost`
 
 If you keep that example unchanged, ensure a local MTA provides `/usr/sbin/sendmail`.
+If `sendmail` is missing, Cerberus now returns a concise delivery error instead of a full Python traceback.
 
 Main keys:
 

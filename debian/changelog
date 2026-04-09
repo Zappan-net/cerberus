@@ -1,5 +1,12 @@
-cerberus (0.1.0-1) unstable; urgency=medium
+cerberus (0.1.0+nmu1) UNRELEASED; urgency=medium
+
+  * Non-maintainer upload.
+  * 
+
+ -- root <w-julien@pm.me>  Thu, 09 Apr 2026 15:49:12 +0200
+
+cerberus (0.1.0) unstable; urgency=medium
 
   * Initial Debian package.
 
- -- Julien Wehrbach <julien@localhost>  Wed, 09 Apr 2026 16:00:00 +0200
+ -- Julien Wehrbach <w-julien@pm.me>  Wed, 09 Apr 2026 16:00:00 +0200

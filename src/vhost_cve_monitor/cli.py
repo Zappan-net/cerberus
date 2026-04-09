@@ -8,6 +8,7 @@ from typing import List, Optional
 
 from .config import load_config
 from .logging_utils import configure_logging
+from .notify import NotificationDeliveryError
 from .scanner import CerberusScanner
 
 
@@ -97,6 +98,9 @@ def main(argv: Optional[List[str]] = None) -> int:
             logging.getLogger(__name__).info("Starting daemon loop")
             scanner.daemon_loop()
             return 0
+    except NotificationDeliveryError as exc:
+        logging.getLogger(__name__).error("Mail delivery error during %s: %s", args.command, exc)
+        return 1
     except Exception as exc:  # noqa: BLE001
         logging.getLogger(__name__).exception("Unhandled Cerberus error during %s", args.command)
         scanner.report_internal_error(args.command, exc)

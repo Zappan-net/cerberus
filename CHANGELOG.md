@@ -25,3 +25,4 @@
 - Packaging now installs Cerberus into `/opt/cerberus/.venv` and refreshes stable wrappers in `/usr/local/bin/` instead of using global `pip install` into the system interpreter.
 - A minimal Debian package layout is now shipped, keeping the dedicated `/opt/cerberus/.venv` runtime model and enabling the timers from `postinst`.
 - The Debian package now reuses `python3-yaml` through a venv created with `--system-site-packages`, avoiding package-install-time dependency downloads.
+- Missing local mail transport binaries now surface as concise delivery errors instead of triggering recursive internal-error tracebacks.

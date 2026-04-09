@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 import smtplib
 import socket
 import ssl
@@ -14,6 +15,10 @@ from typing import Dict
 from .models import NotificationEvent
 
 LOGGER = logging.getLogger(__name__)
+
+
+class NotificationDeliveryError(RuntimeError):
+    """Raised when Cerberus cannot hand off a notification to the configured mail transport."""
 
 SEVERITY_COLORS = {
     "CRITICAL": "#b91c1c",
@@ -123,15 +128,23 @@ class Mailer:
             return
         sendmail_path = self.config["notifications"]["sendmail_path"]
         LOGGER.info("Sending mail via sendmail using %s", sendmail_path)
+        resolved_sendmail = shutil.which(sendmail_path) if os.sep not in sendmail_path else sendmail_path
+        if not resolved_sendmail or not os.path.exists(resolved_sendmail):
+            raise NotificationDeliveryError("sendmail not found at {}".format(sendmail_path))
         payload = message.as_bytes(policy=SMTP)
-        process = subprocess.run(
-            [sendmail_path, "-t", "-oi"],
-            input=payload,
-            capture_output=True,
-            check=False,
-        )
+        try:
+            process = subprocess.run(
+                [resolved_sendmail, "-t", "-oi"],
+                input=payload,
+                capture_output=True,
+                check=False,
+            )
+        except OSError as exc:
+            raise NotificationDeliveryError("sendmail delivery failed: {}".format(exc)) from exc
         if process.returncode != 0:
-            raise RuntimeError(f"sendmail failed: {process.stderr.decode('utf-8', errors='replace').strip()}")
+            raise NotificationDeliveryError(
+                "sendmail failed: {}".format(process.stderr.decode("utf-8", errors="replace").strip())
+            )
         LOGGER.info("Mail sent to %s", ", ".join(recipients))
 
     def _send_via_smtp(self, message: EmailMessage, recipients) -> None:
@@ -156,15 +169,18 @@ class Mailer:
             raise RuntimeError("SMTP authentication requires a password or smtp_password_env")
         client_factory = smtplib.SMTP_SSL if use_ssl else smtplib.SMTP
         context = ssl.create_default_context()
-        with client_factory(host, port, timeout=30) as client:
-            if not use_ssl:
-                client.ehlo()
-                if use_starttls:
-                    client.starttls(context=context)
+        try:
+            with client_factory(host, port, timeout=30) as client:
+                if not use_ssl:
                     client.ehlo()
-            if username:
-                client.login(username, password)
-            client.send_message(message)
+                    if use_starttls:
+                        client.starttls(context=context)
+                        client.ehlo()
+                if username:
+                    client.login(username, password)
+                client.send_message(message)
+        except (OSError, smtplib.SMTPException) as exc:
+            raise NotificationDeliveryError("SMTP delivery failed: {}".format(exc)) from exc
 
     def _smtp_password(self) -> str:
         notifications = self.config["notifications"]

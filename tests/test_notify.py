@@ -7,6 +7,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(__file__)), "src
 
 from vhost_cve_monitor.models import NotificationEvent
 from vhost_cve_monitor.notify import Mailer
+from vhost_cve_monitor.notify import NotificationDeliveryError
 
 
 class NotifyTestCase(unittest.TestCase):
@@ -145,6 +146,30 @@ class NotifyTestCase(unittest.TestCase):
                 mailer.send(event)
 
         client.login.assert_called_once_with("cerberus", "env-secret")
+
+    def test_sendmail_missing_raises_delivery_error(self) -> None:
+        config = {
+            "notifications": {
+                "email_to": ["ops@example.net"],
+                "email_from": "no-reply@example.net",
+                "method": "sendmail",
+                "sendmail_path": "/nonexistent/sendmail",
+            }
+        }
+        mailer = Mailer(config=config, dry_run=False)
+        event = NotificationEvent(
+            category="test",
+            fingerprint="test",
+            subject="[Cerberus][HIGH][host] Test notification",
+            body="Hostname: host\nSeverity: HIGH\nSummary: test",
+            created_at=None,
+            metadata={"severity": "HIGH"},
+        )
+
+        with self.assertRaises(NotificationDeliveryError) as ctx:
+            mailer.send(event)
+
+        self.assertIn("sendmail not found", str(ctx.exception))
 
 
 if __name__ == "__main__":
