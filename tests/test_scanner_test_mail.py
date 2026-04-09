@@ -1,5 +1,6 @@
 import os
 import sys
+import tempfile
 import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(__file__)), "src"))
@@ -9,6 +10,7 @@ from vhost_cve_monitor.scanner import CerberusScanner
 
 class ScannerTestMailTestCase(unittest.TestCase):
     def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
         self.config = {
             "scanner": {
                 "command_timeout_seconds": 1,
@@ -25,13 +27,16 @@ class ScannerTestMailTestCase(unittest.TestCase):
                 "summary_only": True,
             },
             "state": {
-                "database_path": "/tmp/cerberus-test-mail.db",
+                "database_path": os.path.join(self.tmp.name, "state.db"),
                 "cve_cache_ttl_hours": 24,
             },
             "nginx": {"sites_enabled_dir": "/tmp/empty"},
             "filters": {},
             "logging": {"level": "INFO", "file": ""},
         }
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
 
     def test_send_test_mail_uses_requested_severity_and_category(self) -> None:
         scanner = CerberusScanner(config=self.config, dry_run=True, allow_network=False)
