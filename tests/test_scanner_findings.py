@@ -125,6 +125,7 @@ class ScannerFindingsTestCase(unittest.TestCase):
         self.assertIn("[Cerberus][HIGH][zap.one] app.example.net symfony/http-foundation CVE-2026-1000", notifications[0].subject)
         self.assertIn("Fixed version: >= 5.4.46", notifications[0].body)
         self.assertIn("composer update symfony/http-foundation", notifications[0].body)
+        self.assertIn("used at runtime or only during build/test", notifications[0].body)
 
 
 if __name__ == "__main__":

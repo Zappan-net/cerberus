@@ -43,6 +43,58 @@ class ScannerTestMailTestCase(unittest.TestCase):
         self.assertIn("[Cerberus][HIGH][", event.subject)
         self.assertIn("Highest severity: HIGH", event.body)
 
+    def test_send_custom_test_mail_renders_stack_aware_recommendation(self) -> None:
+        scanner = CerberusScanner(config=self.config, dry_run=True, allow_network=False)
+
+        event = scanner.send_custom_test_mail(
+            severity="high",
+            category="vulnerability",
+            stack="nodejs",
+            package_name="lodash",
+            installed_version="4.17.23",
+            fixed_version=">= 4.17.24",
+            advisory_id="GHSA-35jh-r3h4-6jhm",
+            vhost="app.example.net",
+            source_file="/srv/app/package-lock.json",
+            source_line=3726,
+        )
+
+        self.assertEqual(event.category, "vulnerability")
+        self.assertEqual(event.metadata["ecosystem"], "npm")
+        self.assertIn("[Cerberus][HIGH][", event.subject)
+        self.assertIn("app.example.net lodash GHSA-35jh-r3h4-6jhm", event.subject)
+        self.assertIn("Fixed version: >= 4.17.24", event.body)
+        self.assertIn("npm install lodash@", event.body)
+        self.assertIn("used at runtime or only during build/test", event.body)
+
+    def test_send_test_mail_supports_internal_error_category(self) -> None:
+        scanner = CerberusScanner(config=self.config, dry_run=True, allow_network=False)
+
+        event = scanner.send_custom_test_mail(category="internal-error", severity="high")
+
+        self.assertEqual(event.category, "internal-error")
+        self.assertIn("internal error during test-mail", event.subject)
+        self.assertIn("report it on https://github.com/Zappan-net/cerberus/issues", event.body)
+
+    def test_internal_error_notifications_are_not_wrapped_into_digest(self) -> None:
+        scanner = CerberusScanner(config=self.config, dry_run=True, allow_network=False)
+        internal = scanner.send_custom_test_mail(category="internal-error", severity="high")
+        digest = scanner.send_test_mail(severity="medium", category="digest")
+
+        prepared = scanner._prepare_notifications_for_delivery([internal, digest])
+
+        self.assertEqual(prepared[0].category, "internal-error")
+        self.assertEqual(prepared[1].category, "digest")
+
+    def test_report_internal_error_deduplicates_identical_failures(self) -> None:
+        scanner = CerberusScanner(config=self.config, dry_run=True, allow_network=False)
+
+        first = scanner.report_internal_error("scan-once", RuntimeError("boom"))
+        second = scanner.report_internal_error("scan-once", RuntimeError("boom"))
+
+        self.assertIsNotNone(first)
+        self.assertIsNone(second)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -31,11 +31,14 @@ class AdvisoryLogicTestCase(unittest.TestCase):
 
         self.assertIn("package-lock.json", recommendation)
         self.assertIn("npm audit fix", recommendation)
+        self.assertIn("npm install lodash@", recommendation)
+        self.assertIn("used at runtime or only during build/test", recommendation)
 
     def test_build_recommendation_handles_missing_fix_version(self) -> None:
         recommendation = build_recommendation("PyPI", "python", "requests", "2.32.5", None)
 
         self.assertIn("No fixed version is known", recommendation)
+        self.assertIn("used at runtime or only during build/test", recommendation)
 
 
 if __name__ == "__main__":

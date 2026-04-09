@@ -17,6 +17,40 @@ class CliTestCase(unittest.TestCase):
         self.assertEqual(args.severity, "HIGH")
         self.assertEqual(args.category, "digest")
 
+    def test_test_mail_accepts_internal_error_category(self) -> None:
+        parser = build_parser()
+
+        args = parser.parse_args(["test-mail", "--category", "internal-error"])
+
+        self.assertEqual(args.category, "internal-error")
+
+    def test_test_mail_accepts_stack_specific_overrides(self) -> None:
+        parser = build_parser()
+
+        args = parser.parse_args(
+            [
+                "test-mail",
+                "--category",
+                "vulnerability",
+                "--stack",
+                "nodejs",
+                "--package",
+                "lodash",
+                "--installed-version",
+                "4.17.23",
+                "--fixed-version",
+                ">= 4.17.24",
+                "--advisory-id",
+                "GHSA-35jh-r3h4-6jhm",
+            ]
+        )
+
+        self.assertEqual(args.stack, "nodejs")
+        self.assertEqual(args.package_name, "lodash")
+        self.assertEqual(args.installed_version, "4.17.23")
+        self.assertEqual(args.fixed_version, ">= 4.17.24")
+        self.assertEqual(args.advisory_id, "GHSA-35jh-r3h4-6jhm")
+
 
 if __name__ == "__main__":
     unittest.main()

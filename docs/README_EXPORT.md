@@ -113,14 +113,17 @@ The repository file is generic and safe to publish. The `/etc` file contains dep
 - Digest subjects are intentionally short and operational, keeping only product, highest severity, host scope, and alert count.
 - Alerts and digests show fixed versions when upstream advisory data provides them.
 - Recommendations are stack-aware and depend on ecosystem, package manager context, and whether a fixed version is known.
-- `test-mail` can simulate explicit severities and categories.
+- `test-mail` can simulate explicit severities, categories, and stack-specific vulnerability samples.
 - Supported severities: `CRITICAL`, `HIGH`, `MEDIUM`, `WARNING`, `LOW`, `INFO`, `UNKNOWN`
-- Supported categories: `test`, `vulnerability`, `scan-failure`, `digest`
+- Supported categories: `test`, `vulnerability`, `scan-failure`, `internal-error`, `digest`
 - Example commands:
   - `vhost-cve-monitor --config /etc/vhost-cve-monitor/config.yml test-mail --severity HIGH`
   - `vhost-cve-monitor --config /etc/vhost-cve-monitor/config.yml test-mail --severity CRITICAL --category vulnerability`
   - `vhost-cve-monitor --config /etc/vhost-cve-monitor/config.yml test-mail --severity WARNING --category scan-failure`
+  - `vhost-cve-monitor --config /etc/vhost-cve-monitor/config.yml test-mail --severity HIGH --category internal-error`
   - `vhost-cve-monitor --config /etc/vhost-cve-monitor/config.yml test-mail --severity MEDIUM --category digest`
+  - `vhost-cve-monitor --config /etc/vhost-cve-monitor/config.yml test-mail --category vulnerability --stack nodejs --package lodash --installed-version 4.17.23 --fixed-version ">= 4.17.24" --advisory-id GHSA-35jh-r3h4-6jhm`
+- Unhandled Cerberus execution failures generate a direct `internal-error` mail with a GitHub bug-report hint and are not wrapped into digest mode.
 - Live validation note:
   - `zap.one` and `zapandrok.com` both reached a clean `mail-tester` score after SPF, DKIM, and DMARC were aligned
 

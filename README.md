@@ -221,7 +221,24 @@ Test mail with explicit severity and category:
 ```bash
 vhost-cve-monitor --config /etc/vhost-cve-monitor/config.yml test-mail --severity CRITICAL --category vulnerability
 vhost-cve-monitor --config /etc/vhost-cve-monitor/config.yml test-mail --severity WARNING --category scan-failure
+vhost-cve-monitor --config /etc/vhost-cve-monitor/config.yml test-mail --severity HIGH --category internal-error
 vhost-cve-monitor --config /etc/vhost-cve-monitor/config.yml test-mail --severity MEDIUM --category digest
+```
+
+Stack-aware vulnerability simulation:
+
+```bash
+vhost-cve-monitor --config /etc/vhost-cve-monitor/config.yml test-mail \
+  --category vulnerability \
+  --severity HIGH \
+  --stack nodejs \
+  --package lodash \
+  --installed-version 4.17.23 \
+  --fixed-version ">= 4.17.24" \
+  --advisory-id GHSA-35jh-r3h4-6jhm \
+  --vhost app.example.net \
+  --source-file /srv/app/package-lock.json \
+  --source-line 3726
 ```
 
 Supported `test-mail` categories:
@@ -229,6 +246,7 @@ Supported `test-mail` categories:
 - `test`
 - `vulnerability`
 - `scan-failure`
+- `internal-error`
 - `digest`
 
 Supported `test-mail` severities:
@@ -240,6 +258,20 @@ Supported `test-mail` severities:
 - `LOW`
 - `INFO`
 - `UNKNOWN`
+
+Additional `test-mail` overrides for vulnerability simulation:
+
+- `--stack`
+- `--ecosystem`
+- `--package`
+- `--installed-version`
+- `--fixed-version`
+- `--advisory-id`
+- `--vhost`
+- `--source-file`
+- `--source-line`
+
+Unhandled Cerberus exceptions during `scan-once`, `sync-cve`, and the internal `daemon` loop now generate a dedicated high-severity internal-error notification. These mails are sent directly even when digest mode is enabled, and they invite the operator to report reproducible bugs on the GitHub issue tracker.
 
 Internal daemon mode:
 
@@ -312,6 +344,8 @@ PYTHONPATH=src python3 -m unittest discover -s tests -v
 Covered critical parts:
 
 - CLI parsing for `test-mail` severity and category simulation
+- CLI parsing for stack-aware vulnerability simulation in `test-mail`
+- internal-error notification routing and deduplication
 - advisory severity precedence and canonical advisory identifiers
 - stack-aware recommendation generation
 - fixed version extraction and rendering

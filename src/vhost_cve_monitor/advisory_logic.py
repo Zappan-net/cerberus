@@ -116,51 +116,75 @@ def build_recommendation(
 ) -> str:
     safe_target = fixed_version or infer_first_safe_from_range(affected_range)
     ecosystem_name = str(ecosystem or "").lower()
+    usage_warning = (
+        " Verify whether `{}` is used at runtime or only during build/test before applying a broad upgrade."
+    ).format(package_name)
     if ecosystem_name == "npm":
         if safe_target:
             return (
-                "Upgrade `{}` from {} to {}, refresh `package-lock.json`, and review "
-                "`npm audit fix` output before redeploying."
-            ).format(package_name, installed_version, safe_target)
+                "Upgrade `{}` from {} to {} with `npm install {package}@\"{target}\"`, refresh "
+                "`package-lock.json`, and use `npm audit fix` only after reviewing the resulting dependency drift.{}"
+            ).format(
+                package_name,
+                installed_version,
+                safe_target,
+                usage_warning,
+                package=package_name,
+                target=safe_target,
+            )
         return (
             "No fixed version is known. Review the dependency tree for `{}`, apply any available "
-            "upstream workaround, and monitor `npm audit` for a patched release."
-        ).format(package_name)
+            "upstream workaround, and monitor `npm audit` for a patched release.{}"
+        ).format(package_name, usage_warning)
     if ecosystem_name == "pypi":
         if safe_target:
             return (
-                "Pin `{}` from {} to {}, update the requirements or lockfile, and rerun `pip-audit` "
-                "before redeploying."
-            ).format(package_name, installed_version, safe_target)
+                "Upgrade `{}` from {} to {} with `pip install -U {package}{target_spec}`, update the "
+                "requirements or lockfile, and rerun `pip-audit` before redeploying.{}"
+            ).format(
+                package_name,
+                installed_version,
+                safe_target,
+                usage_warning,
+                package=package_name,
+                target_spec=safe_target.replace(" ", ""),
+            )
         return (
             "No fixed version is known. Review constraints for `{}`, check upstream advisories, and "
-            "consider temporary pinning or compensating controls."
-        ).format(package_name)
+            "consider temporary pinning or compensating controls.{}"
+        ).format(package_name, usage_warning)
     if ecosystem_name == "packagist":
         if safe_target:
             return (
                 "Update `{}` from {} to {} with `composer update {}`, review `composer.lock`, and "
-                "redeploy only after validating dependency drift."
-            ).format(package_name, installed_version, safe_target, package_name)
+                "redeploy only after validating dependency drift.{}"
+            ).format(package_name, installed_version, safe_target, package_name, usage_warning)
         return (
             "No fixed version is known. Review upstream guidance for `{}` and keep `composer audit` "
-            "under watch until a patched release is available."
-        ).format(package_name)
+            "under watch until a patched release is available.{}"
+        ).format(package_name, usage_warning)
     if ecosystem_name == "go":
         if safe_target:
             return (
-                "Upgrade `{}` from {} to {}, refresh the Go module graph, and verify the rebuilt "
-                "service before rollout."
-            ).format(package_name, installed_version, safe_target)
+                "Upgrade `{}` from {} to {} with `go get {package}@{target}`, refresh the Go module "
+                "graph, and verify the rebuilt service before rollout.{}"
+            ).format(
+                package_name,
+                installed_version,
+                safe_target,
+                usage_warning,
+                package=package_name,
+                target=safe_target.replace(">= ", "").replace(">=", ""),
+            )
         return (
             "No fixed version is known. Review upstream guidance for `{}` and assess whether the "
-            "affected code path can be disabled or isolated."
-        ).format(package_name)
+            "affected code path can be disabled or isolated.{}"
+        ).format(package_name, usage_warning)
     if safe_target:
-        return "Upgrade `{}` from {} to {} and redeploy after validating the affected service.".format(
-            package_name, installed_version, safe_target
-        )
+        return (
+            "Upgrade `{}` from {} to {} and redeploy after validating the affected service.{}"
+        ).format(package_name, installed_version, safe_target, usage_warning)
     return (
         "No fixed version is known for `{}` on stack `{}`. Review upstream guidance and apply "
-        "compensating controls if the affected path is exposed."
-    ).format(package_name, stack)
+        "compensating controls if the affected path is exposed.{}"
+    ).format(package_name, stack, usage_warning)

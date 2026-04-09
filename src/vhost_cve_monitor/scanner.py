@@ -4,6 +4,7 @@ import logging
 import re
 import socket
 import time
+import traceback
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from fnmatch import fnmatch
@@ -26,6 +27,7 @@ from .stack_detection import detect_stacks
 from .state_store import StateStore
 
 LOGGER = logging.getLogger(__name__)
+BUG_REPORT_URL = "https://github.com/Zappan-net/cerberus/issues"
 
 
 def _clean_text(value: str) -> str:
@@ -163,23 +165,28 @@ class CerberusScanner:
         return results, notifications
 
     def _prepare_notifications_for_delivery(self, notifications: List[NotificationEvent]) -> List[NotificationEvent]:
+        direct_notifications = [item for item in notifications if item.category == "internal-error"]
+        digest_candidates = [item for item in notifications if item.category != "internal-error"]
+        if not digest_candidates:
+            return self._sort_notifications(direct_notifications)
         if self.summary_only:
-            if not notifications:
-                return []
-            return [self._build_digest_notification(self._sort_notifications(notifications), subject_all=True)]
-        if len(notifications) <= self.max_emails_per_run:
-            return self._sort_notifications(notifications)
-        sorted_notifications = self._sort_notifications(notifications)
-        direct_notifications = sorted_notifications[: self.max_emails_per_run]
+            return self._sort_notifications(direct_notifications) + [
+                self._build_digest_notification(self._sort_notifications(digest_candidates), subject_all=True)
+            ]
+        if len(digest_candidates) <= self.max_emails_per_run:
+            return self._sort_notifications(direct_notifications + digest_candidates)
+        sorted_notifications = self._sort_notifications(digest_candidates)
+        capped_notifications = sorted_notifications[: self.max_emails_per_run]
         overflow = sorted_notifications[self.max_emails_per_run :]
-        direct_notifications.append(self._build_digest_notification(overflow))
+        delivery_batch = self._sort_notifications(direct_notifications + capped_notifications)
+        delivery_batch.append(self._build_digest_notification(overflow))
         LOGGER.warning(
             "Notification count %s exceeds per-run limit %s, sending %s direct alerts and one digest",
-            len(notifications),
+            len(digest_candidates),
             self.max_emails_per_run,
-            len(direct_notifications) - 1,
+            len(delivery_batch) - len(direct_notifications) - 1,
         )
-        return direct_notifications
+        return delivery_batch
 
     def _sort_notifications(self, notifications: List[NotificationEvent]) -> List[NotificationEvent]:
         return sorted(
@@ -473,27 +480,117 @@ class CerberusScanner:
             )
         return notifications
 
+    def report_internal_error(self, operation: str, error: BaseException) -> Optional[NotificationEvent]:
+        hostname = socket.gethostname()
+        now = datetime.now(timezone.utc)
+        severity = normalize_severity("HIGH")
+        trace = traceback.format_exc()
+        if trace.strip() == "NoneType: None":
+            trace = "".join(traceback.format_exception(type(error), error, error.__traceback__))
+        trace = trace.strip()
+        payload = {
+            "scope": operation,
+            "reason": type(error).__name__,
+            "detail": str(error),
+            "severity": severity,
+            "traceback": trace,
+        }
+        fingerprint = "internal-error:{}".format(operation)
+        if not self.state.should_alert(fingerprint, payload):
+            return None
+        body_lines = [
+            "Hostname: {}".format(hostname),
+            "Date: {}".format(now.isoformat()),
+            "Component: cerberus-daemon",
+            "Operation: {}".format(operation),
+            "Error type: {}".format(type(error).__name__),
+            "Detail: {}".format(str(error) or "no exception message"),
+            "Severity: {}".format(severity),
+            "Summary: Cerberus hit an internal execution error.",
+            "Recommendation: inspect the local logs and, if the failure is reproducible, report it on {}.".format(
+                BUG_REPORT_URL
+            ),
+        ]
+        if trace:
+            body_lines.extend(["", "Traceback:", trace])
+        event = NotificationEvent(
+            category="internal-error",
+            fingerprint=fingerprint,
+            subject="[Cerberus][{}][{}] internal error during {}".format(severity, hostname, operation),
+            body="\n".join(body_lines),
+            created_at=now,
+            metadata=payload,
+        )
+        for notification in self._prepare_notifications_for_delivery([event]):
+            LOGGER.info("Sending %s notification: %s", notification.category, notification.subject)
+            self.mailer.send(notification)
+        return event
+
     def send_test_mail(self, severity: str = "INFO", category: str = "test") -> NotificationEvent:
+        return self.send_custom_test_mail(severity=severity, category=category)
+
+    def send_custom_test_mail(
+        self,
+        severity: str = "INFO",
+        category: str = "test",
+        stack: Optional[str] = None,
+        ecosystem: Optional[str] = None,
+        package_name: Optional[str] = None,
+        installed_version: Optional[str] = None,
+        fixed_version: Optional[str] = None,
+        advisory_id: Optional[str] = None,
+        vhost: Optional[str] = None,
+        source_file: Optional[str] = None,
+        source_line: Optional[int] = None,
+    ) -> NotificationEvent:
         hostname = socket.gethostname()
         now = datetime.now(timezone.utc)
         normalized_severity = normalize_severity(severity, category=category)
         category = str(category or "test")
         subject_prefix = "[Cerberus][{}][{}]".format(normalized_severity, hostname)
+        stack = str(stack or "test")
+        package_name = str(package_name or "demo-package")
+        installed_version = str(installed_version or "0.0.0")
+        advisory_id = str(advisory_id or "TEST-0000")
+        vhost = str(vhost or "test.example.internal")
+        source_file = str(source_file or "/tmp/demo-manifest.lock")
+        source_line = 1 if source_line is None else int(source_line)
+        stack_to_ecosystem = {
+            "nodejs": "npm",
+            "npm": "npm",
+            "python": "PyPI",
+            "django": "PyPI",
+            "php-composer": "Packagist",
+            "composer": "Packagist",
+            "gitea": "Gitea",
+            "go": "Go",
+            "cargo": "crates.io",
+        }
+        resolved_ecosystem = str(ecosystem or stack_to_ecosystem.get(stack.lower(), stack)).strip()
         if category == "vulnerability":
-            subject = "{} Test vulnerability on test.example.internal: demo-package TEST-0000".format(subject_prefix)
+            recommendation = build_recommendation(
+                ecosystem=resolved_ecosystem,
+                stack=stack,
+                package_name=package_name,
+                installed_version=installed_version,
+                fixed_version=fixed_version,
+                affected_range=None,
+            )
+            subject = "{} {} {} {}".format(subject_prefix, vhost, package_name, advisory_id)
             body_lines = [
                 f"Hostname: {hostname}",
                 f"Date: {now.isoformat()}",
-                "Vhost: test.example.internal",
-                "Stack: test",
-                "Dependency: demo-package",
-                "Detected version: 0.0.0",
-                "Source file: /tmp/demo-manifest.lock",
-                "Source line: 1",
-                "CVE / Advisory: TEST-0000",
+                "Vhost: {}".format(vhost),
+                "Stack: {}".format(stack),
+                "Dependency: {}".format(package_name),
+                "Detected version: {}".format(installed_version),
+                "Fixed version: {}".format(fixed_version or "unknown"),
+                "Source file: {}".format(source_file),
+                "Source line: {}".format(source_line),
+                "CVE / Advisory: {}".format(advisory_id),
                 "Severity: {}".format(normalized_severity.lower()),
-                "Summary: test vulnerability notification from vhost-cve-monitor",
-                "Recommendation: no action required.",
+                "Summary: simulated vulnerability notification from vhost-cve-monitor",
+                "Recommendation: {}".format(recommendation),
             ]
         elif category == "scan-failure":
             subject = "{} test.example.internal repeated scan failure: test_failure".format(subject_prefix)
@@ -509,6 +606,21 @@ class CerberusScanner:
                 "Summary: repeated scan failure",
                 "Recommendation: inspect logs and fix the audit environment or the broken project tree.",
                 "Detail: test_failure simulated by test-mail",
+            ]
+        elif category == "internal-error":
+            subject = "{} internal error during test-mail".format(subject_prefix)
+            body_lines = [
+                f"Hostname: {hostname}",
+                f"Date: {now.isoformat()}",
+                "Component: cerberus-daemon",
+                "Operation: test-mail",
+                "Error type: RuntimeError",
+                "Detail: simulated internal error from test-mail",
+                "Severity: {}".format(normalized_severity),
+                "Summary: Cerberus hit an internal execution error.",
+                "Recommendation: inspect the local logs and, if the failure is reproducible, report it on {}.".format(
+                    BUG_REPORT_URL
+                ),
             ]
         elif category == "digest":
             subject = "{} 3 alerts".format(subject_prefix)
@@ -545,7 +657,16 @@ class CerberusScanner:
             subject=subject,
             body="\n".join(body_lines),
             created_at=now,
-            metadata={"severity": normalized_severity, "category": category},
+            metadata={
+                "severity": normalized_severity,
+                "category": category,
+                "stack": stack,
+                "ecosystem": resolved_ecosystem,
+                "dependency": package_name,
+                "version": installed_version,
+                "fixed_version": fixed_version,
+                "vuln_id": advisory_id,
+            },
         )
         self.mailer.send(event)
         return event
@@ -555,6 +676,7 @@ class CerberusScanner:
         while True:
             try:
                 self.scan_once()
-            except Exception:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001
                 LOGGER.exception("Unhandled exception during scan cycle")
+                self.report_internal_error("daemon", exc)
             time.sleep(interval)

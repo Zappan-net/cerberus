@@ -569,10 +569,12 @@ It exists, but the recommended deployment pattern remains `systemd timer`.
 Additional test-mail behavior:
 
 - `send_test_mail()` accepts explicit severities and categories
+- `send_custom_test_mail()` can simulate a concrete vulnerability with stack, package, version, fixed-version, advisory, vhost, and evidence overrides
 - supported categories:
   - `test`
   - `vulnerability`
   - `scan-failure`
+  - `internal-error`
   - `digest`
 - supported severities:
   - `CRITICAL`
@@ -583,6 +585,8 @@ Additional test-mail behavior:
   - `INFO`
   - `UNKNOWN`
 - digest test messages include synthetic grouped alert lines
+- vulnerability test messages can exercise stack-aware remediation text without waiting for a real scan finding
+- internal-error test messages exercise the dedicated daemon failure path and the GitHub bug-report hint
 - compact subjects mirror the real mail path and no longer include redundant markers such as both `ALERT` and `in this scan`
 
 ### 4.13 [cli.py](../src/vhost_cve_monitor/cli.py)
@@ -607,6 +611,23 @@ Additional `test-mail` options:
 
 - `--severity`
 - `--category`
+- `--stack`
+- `--ecosystem`
+- `--package`
+- `--installed-version`
+- `--fixed-version`
+- `--advisory-id`
+- `--vhost`
+- `--source-file`
+- `--source-line`
+
+Unhandled exceptions in `scan-once`, `sync-cve`, and the internal `daemon` loop are reported through `report_internal_error()`. These notifications:
+
+- use category `internal-error`
+- keep severity `HIGH`
+- are deduplicated through the state store
+- bypass digest grouping so operator-facing daemon failures are mailed directly
+- invite the operator to open a bug report on the Cerberus GitHub issue tracker when the issue is reproducible
 
 The CLI does very little business logic. It mainly wires together:
 
@@ -833,7 +854,9 @@ Useful commands:
 vhost-cve-monitor --verbose --config /etc/vhost-cve-monitor/config.yml --dry-run scan-once
 vhost-cve-monitor --config /etc/vhost-cve-monitor/config.yml test-mail --severity HIGH
 vhost-cve-monitor --config /etc/vhost-cve-monitor/config.yml test-mail --severity WARNING --category scan-failure
+vhost-cve-monitor --config /etc/vhost-cve-monitor/config.yml test-mail --severity HIGH --category internal-error
 vhost-cve-monitor --config /etc/vhost-cve-monitor/config.yml test-mail --severity MEDIUM --category digest
+vhost-cve-monitor --config /etc/vhost-cve-monitor/config.yml test-mail --category vulnerability --stack nodejs --package lodash --installed-version 4.17.23 --fixed-version ">= 4.17.24" --advisory-id GHSA-35jh-r3h4-6jhm
 journalctl -u vhost-cve-monitor.service -n 200 --no-pager
 journalctl -u vhost-cve-monitor-cve-sync.service -n 200 --no-pager
 sqlite3 /var/lib/vhost-cve-monitor/state.db '.tables'

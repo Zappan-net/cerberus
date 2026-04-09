@@ -38,9 +38,18 @@ def build_parser() -> argparse.ArgumentParser:
     test_mail_parser.add_argument(
         "--category",
         default="test",
-        choices=["test", "vulnerability", "scan-failure", "digest"],
+        choices=["test", "vulnerability", "scan-failure", "internal-error", "digest"],
         help="Notification category to simulate in the test mail",
     )
+    test_mail_parser.add_argument("--stack", help="Stack name to simulate for vulnerability test mails")
+    test_mail_parser.add_argument("--ecosystem", help="Explicit ecosystem override for vulnerability test mails")
+    test_mail_parser.add_argument("--package", dest="package_name", help="Package name to simulate")
+    test_mail_parser.add_argument("--installed-version", help="Installed version to simulate")
+    test_mail_parser.add_argument("--fixed-version", help="Fixed version to render when known")
+    test_mail_parser.add_argument("--advisory-id", help="Advisory id to render")
+    test_mail_parser.add_argument("--vhost", help="Virtual host name to render")
+    test_mail_parser.add_argument("--source-file", help="Evidence file path to render")
+    test_mail_parser.add_argument("--source-line", type=int, help="Evidence line number to render")
     return parser
 
 
@@ -51,30 +60,47 @@ def main(argv: Optional[List[str]] = None) -> int:
     configure_logging(config, override_level="DEBUG" if args.verbose else None)
     scanner = CerberusScanner(config, dry_run=args.dry_run, allow_network=not args.offline)
 
-    if args.command == "scan-once":
-        results, notifications = scanner.scan_once()
-        print(
-            json.dumps(
-                {
-                    "vhosts": len(results),
-                    "notifications": len(notifications),
-                },
-                indent=2,
+    try:
+        if args.command == "scan-once":
+            results, notifications = scanner.scan_once()
+            print(
+                json.dumps(
+                    {
+                        "vhosts": len(results),
+                        "notifications": len(notifications),
+                    },
+                    indent=2,
+                )
             )
-        )
-        return 0
-    if args.command == "sync-cve":
-        refreshed = scanner.refresh_cve_cache()
-        print(json.dumps({"refreshed_packages": refreshed}, indent=2))
-        return 0
-    if args.command == "test-mail":
-        event = scanner.send_test_mail(severity=args.severity, category=args.category)
-        print(json.dumps({"subject": event.subject}, indent=2))
-        return 0
-    if args.command == "daemon":
-        logging.getLogger(__name__).info("Starting daemon loop")
-        scanner.daemon_loop()
-        return 0
+            return 0
+        if args.command == "sync-cve":
+            refreshed = scanner.refresh_cve_cache()
+            print(json.dumps({"refreshed_packages": refreshed}, indent=2))
+            return 0
+        if args.command == "test-mail":
+            event = scanner.send_custom_test_mail(
+                severity=args.severity,
+                category=args.category,
+                stack=args.stack,
+                ecosystem=args.ecosystem,
+                package_name=args.package_name,
+                installed_version=args.installed_version,
+                fixed_version=args.fixed_version,
+                advisory_id=args.advisory_id,
+                vhost=args.vhost,
+                source_file=args.source_file,
+                source_line=args.source_line,
+            )
+            print(json.dumps({"subject": event.subject}, indent=2))
+            return 0
+        if args.command == "daemon":
+            logging.getLogger(__name__).info("Starting daemon loop")
+            scanner.daemon_loop()
+            return 0
+    except Exception as exc:  # noqa: BLE001
+        logging.getLogger(__name__).exception("Unhandled Cerberus error during %s", args.command)
+        scanner.report_internal_error(args.command, exc)
+        return 1
     parser.error("Unknown command")
     return 2
 
