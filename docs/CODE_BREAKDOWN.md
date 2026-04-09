@@ -421,6 +421,8 @@ Supported transports:
 
 - local `sendmail`
 - SMTP to localhost or another configured endpoint
+- authenticated SMTP with STARTTLS
+- authenticated SMTP with implicit TLS (`SMTP_SSL`)
 
 Behavior:
 
@@ -429,6 +431,8 @@ Behavior:
 - adds severity-aware headers such as `X-Cerberus-Severity`, `X-Priority`, `Priority`, and `Importance`
 - honors dry-run mode
 - logs transport choice in verbose mode
+- supports relay authentication via `smtp_username` plus either `smtp_password` or `smtp_password_env`
+- rejects invalid combinations such as enabling both `smtp_ssl` and `smtp_starttls`
 
 Dry-run mode is important because it lets you validate the full scan path without spamming real recipients.
 

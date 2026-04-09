@@ -18,6 +18,7 @@
 - `UNKNOWN` no longer overrides a known severity during finding enrichment.
 - OSV severity extraction now checks top-level `database_specific.severity` before matched `affected[*]` metadata and logs the candidate fields chosen during debug runs.
 - When OSV only exposes CVSS scores or CVSS v3.x vectors, Cerberus now derives a canonical severity instead of falling back to `UNKNOWN`.
+- SMTP delivery now supports authenticated relays with either STARTTLS or implicit TLS, in addition to local sendmail/Postfix handoff.
 - Numeric npm advisory identifiers are rendered explicitly as `NPM-ADVISORY-*` when no standard public identifier is available.
 - The advisory cache schema stores fixed-version and affected-range data to keep offline alert rendering actionable.
 - Internal execution failures bypass digest grouping so daemon crashes are mailed directly and deduplicated by operation and payload.

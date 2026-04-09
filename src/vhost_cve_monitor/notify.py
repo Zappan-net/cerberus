@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import logging
+import os
 import smtplib
 import socket
+import ssl
 import subprocess
 from email.policy import SMTP
 from html import escape
@@ -116,11 +118,7 @@ class Mailer:
             return
         method = self.config["notifications"].get("method", "sendmail")
         if method == "smtp":
-            host = self.config["notifications"]["smtp_host"]
-            port = int(self.config["notifications"]["smtp_port"])
-            LOGGER.info("Sending mail via SMTP to %s:%s", host, port)
-            with smtplib.SMTP(host, port, timeout=30) as client:
-                client.send_message(message)
+            self._send_via_smtp(message, recipients)
             LOGGER.info("Mail sent to %s", ", ".join(recipients))
             return
         sendmail_path = self.config["notifications"]["sendmail_path"]
@@ -135,3 +133,42 @@ class Mailer:
         if process.returncode != 0:
             raise RuntimeError(f"sendmail failed: {process.stderr.decode('utf-8', errors='replace').strip()}")
         LOGGER.info("Mail sent to %s", ", ".join(recipients))
+
+    def _send_via_smtp(self, message: EmailMessage, recipients) -> None:
+        notifications = self.config["notifications"]
+        host = notifications["smtp_host"]
+        port = int(notifications["smtp_port"])
+        use_ssl = bool(notifications.get("smtp_ssl"))
+        use_starttls = bool(notifications.get("smtp_starttls"))
+        username = str(notifications.get("smtp_username") or "").strip()
+        password = self._smtp_password()
+        LOGGER.info(
+            "Sending mail via SMTP to %s:%s (ssl=%s, starttls=%s, auth=%s)",
+            host,
+            port,
+            use_ssl,
+            use_starttls,
+            bool(username),
+        )
+        if use_ssl and use_starttls:
+            raise RuntimeError("smtp_ssl and smtp_starttls cannot both be enabled")
+        if username and not password:
+            raise RuntimeError("SMTP authentication requires a password or smtp_password_env")
+        client_factory = smtplib.SMTP_SSL if use_ssl else smtplib.SMTP
+        context = ssl.create_default_context()
+        with client_factory(host, port, timeout=30) as client:
+            if not use_ssl:
+                client.ehlo()
+                if use_starttls:
+                    client.starttls(context=context)
+                    client.ehlo()
+            if username:
+                client.login(username, password)
+            client.send_message(message)
+
+    def _smtp_password(self) -> str:
+        notifications = self.config["notifications"]
+        env_name = str(notifications.get("smtp_password_env") or "").strip()
+        if env_name:
+            return os.environ.get(env_name, "")
+        return str(notifications.get("smtp_password") or "")

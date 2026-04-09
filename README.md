@@ -27,7 +27,7 @@ The project is split into explicit layers:
 6. `state_store.py`
    Stores alert fingerprints and repeated failure counters to avoid duplicate emails.
 7. `notify.py`
-   Sends mail through local `sendmail` or SMTP on `localhost`.
+   Sends mail through local `sendmail`, plain SMTP, STARTTLS SMTP, or authenticated SMTPS/SMTP.
 8. `scanner.py`
    Orchestrates one full scan, cache refresh, deduplicated notification generation, and the optional internal daemon loop.
 
@@ -168,9 +168,41 @@ Main keys:
 - `scanner.command_timeout_seconds`: timeout for `npm audit`, `composer audit`, `pip-audit`, and `pip freeze`.
 - `scanner.repeated_failure_threshold`: number of identical failures before an alert is sent.
 - `notifications.method`: `sendmail` or `smtp`.
+- `notifications.smtp_host` / `notifications.smtp_port`: SMTP relay endpoint used when `method: smtp`.
+- `notifications.smtp_ssl`: enable implicit TLS (`SMTP_SSL`), typically for port 465.
+- `notifications.smtp_starttls`: upgrade a plain SMTP session with STARTTLS, typically for port 587.
+- `notifications.smtp_username`: SMTP account name for authenticated relays.
+- `notifications.smtp_password`: SMTP password if you choose to store it in YAML.
+- `notifications.smtp_password_env`: environment variable name holding the SMTP password; preferred over inline secrets.
 - `notifications.max_emails_per_run`: hard cap per scan cycle, with overflow grouped into one digest mail.
 - `notifications.summary_only`: when enabled, one scan generates one single summary mail containing every alert from that run.
 - `filters.*`: allowlist/blocklist for vhosts and paths.
+
+Authenticated SMTP examples:
+
+```yaml
+notifications:
+  method: smtp
+  smtp_host: smtp.example.net
+  smtp_port: 587
+  smtp_ssl: false
+  smtp_starttls: true
+  smtp_username: cerberus@example.net
+  smtp_password_env: CERBERUS_SMTP_PASSWORD
+```
+
+```yaml
+notifications:
+  method: smtp
+  smtp_host: smtp.example.net
+  smtp_port: 465
+  smtp_ssl: true
+  smtp_starttls: false
+  smtp_username: cerberus@example.net
+  smtp_password_env: CERBERUS_SMTP_PASSWORD
+```
+
+Do not enable both `smtp_ssl` and `smtp_starttls` at the same time.
 
 ## CLI
 
@@ -323,7 +355,7 @@ Mail presentation:
 
 Operational note:
 
-- a successful Cerberus send means local handoff to `sendmail` or SMTP completed
+- a successful Cerberus send means local handoff to `sendmail` or the configured SMTP relay completed
 - final delivery still depends on remote acceptance and public mail authentication
 - in the current live validation, `zap.one` and `zapandrok.com` both reached a clean `mail-tester` score after SPF, DKIM, and DMARC were aligned
 

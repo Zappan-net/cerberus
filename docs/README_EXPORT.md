@@ -14,7 +14,7 @@ This export document is intended for editable office formats such as DOCX. It is
 - audits runs optional ecosystem-native tools such as `npm audit`, `composer audit`, and `pip-audit`.
 - cve_db maintains a local SQLite advisory cache fed by targeted OSV queries.
 - state_store prevents alert spam by tracking previously sent findings and repeated failures.
-- notify delivers alerts through local sendmail or SMTP.
+- notify delivers alerts through local sendmail, plain SMTP, STARTTLS SMTP, or authenticated SMTPS/SMTP.
 - scanner orchestrates the full scan cycle.
 
 ## Runtime Flow
@@ -108,7 +108,9 @@ The repository file is generic and safe to publish. The `/etc` file contains dep
 
 - Alerts can be sent individually or grouped.
 - Current recommended mode: one digest per scan.
-- Messages are handed off to local sendmail/Postfix.
+- Messages are handed off to local sendmail/Postfix or to a configured SMTP relay.
+- SMTP mode supports both STARTTLS and implicit TLS, with optional authentication credentials.
+- Prefer `smtp_password_env` over `smtp_password` when storing relay credentials outside the YAML file.
 - Delivery success to the final recipient depends on DNS authentication and remote provider policy.
 - Digest subjects are intentionally short and operational, keeping only product, highest severity, host scope, and alert count.
 - Alerts and digests show fixed versions when upstream advisory data provides them.
