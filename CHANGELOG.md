@@ -22,3 +22,6 @@
 - Numeric npm advisory identifiers are rendered explicitly as `NPM-ADVISORY-*` when no standard public identifier is available.
 - The advisory cache schema stores fixed-version and affected-range data to keep offline alert rendering actionable.
 - Internal execution failures bypass digest grouping so daemon crashes are mailed directly and deduplicated by operation and payload.
+- Packaging now installs Cerberus into `/opt/cerberus/.venv` and refreshes stable wrappers in `/usr/local/bin/` instead of using global `pip install` into the system interpreter.
+- A minimal Debian package layout is now shipped, keeping the dedicated `/opt/cerberus/.venv` runtime model and enabling the timers from `postinst`.
+- The Debian package now reuses `python3-yaml` through a venv created with `--system-site-packages`, avoiding package-install-time dependency downloads.

@@ -1,0 +1,51 @@
+#!/bin/sh
+set -eu
+
+PROJECT_DIR="/opt/cerberus"
+VENV_DIR="${PROJECT_DIR}/.venv"
+CONFIG_DIR="/etc/vhost-cve-monitor"
+CONFIG_FILE="${CONFIG_DIR}/config.yml"
+STATE_DIR="/var/lib/vhost-cve-monitor"
+WRAPPER_DIR="/usr/local/bin"
+SYSTEMCTL="${SYSTEMCTL:-systemctl}"
+
+create_wrapper() {
+    target="$1"
+    wrapper="$2"
+    cat > "$wrapper" <<EOF
+#!/bin/sh
+exec "$target" "\$@"
+EOF
+    chmod 0755 "$wrapper"
+}
+
+if ! python3 -m venv --help >/dev/null 2>&1; then
+    echo "python3-venv is required. Install it first, then rerun dpkg --configure -a." >&2
+    exit 1
+fi
+
+install -d -m 0755 "$CONFIG_DIR"
+install -d -m 0755 "$STATE_DIR"
+install -d -m 0755 "$WRAPPER_DIR"
+
+if [ ! -d "$VENV_DIR" ]; then
+    python3 -m venv --system-site-packages "$VENV_DIR"
+fi
+
+"${VENV_DIR}/bin/python" -m pip install --no-deps --upgrade "$PROJECT_DIR"
+install -m 0755 "${PROJECT_DIR}/packaging/scripts/testmail" "${VENV_DIR}/bin/vhost-cve-monitor-testmail"
+
+create_wrapper "${VENV_DIR}/bin/vhost-cve-monitor" "${WRAPPER_DIR}/vhost-cve-monitor"
+create_wrapper "${VENV_DIR}/bin/vhost-cve-monitor-testmail" "${WRAPPER_DIR}/vhost-cve-monitor-testmail"
+
+if [ ! -f "$CONFIG_FILE" ]; then
+    install -m 0644 "${PROJECT_DIR}/packaging/examples/config.yml" "$CONFIG_FILE"
+fi
+
+if command -v "$SYSTEMCTL" >/dev/null 2>&1; then
+    "$SYSTEMCTL" daemon-reload || true
+    "$SYSTEMCTL" enable --now vhost-cve-monitor.timer || true
+    "$SYSTEMCTL" enable --now vhost-cve-monitor-cve-sync.timer || true
+fi
+
+exit 0

@@ -9,3 +9,11 @@ dist/
 *.egg-info/
 .codex
 RESUME
+.venv/
+debian/.debhelper/
+debian/debhelper-build-stamp
+debian/files
+debian/tmp/
+debian/*.debhelper
+debian/*.substvars
+debian/vhost-cve-monitor/

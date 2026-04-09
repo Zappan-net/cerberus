@@ -120,6 +120,7 @@ The repository file is generic and safe to publish. The `/etc` file contains dep
 - Supported categories: `test`, `vulnerability`, `scan-failure`, `internal-error`, `digest`
 - Example commands:
   - `vhost-cve-monitor --config /etc/vhost-cve-monitor/config.yml test-mail --severity HIGH`
+  - `vhost-cve-monitor-testmail HIGH`
   - `vhost-cve-monitor --config /etc/vhost-cve-monitor/config.yml test-mail --severity CRITICAL --category vulnerability`
   - `vhost-cve-monitor --config /etc/vhost-cve-monitor/config.yml test-mail --severity WARNING --category scan-failure`
   - `vhost-cve-monitor --config /etc/vhost-cve-monitor/config.yml test-mail --severity HIGH --category internal-error`
@@ -133,12 +134,18 @@ The repository file is generic and safe to publish. The `/etc` file contains dep
 
 If Cerberus is already installed on a machine:
 
-- update the package from the repository root with `python3 -m pip install .`
+- rerun `sudo sh packaging/scripts/install.sh` from the repository root instead of using global `pip install`
+- Cerberus is installed into `/opt/cerberus/.venv`
+- admin-facing wrappers are refreshed in `/usr/local/bin/`
+- a minimal Debian package is also available through `dpkg-buildpackage -us -uc`, with the same runtime model under `/opt/cerberus/.venv`
+- the Debian package relies on `python3-yaml` and a venv created with `--system-site-packages`, so `postinst` does not need to download Python dependencies
 - run `systemctl daemon-reload` after changing packaged unit files
 - use `systemctl enable --now ...timer` to ensure timers are enabled
 - if timers were already active, `daemon-reload` is usually enough unless the unit files changed structurally
 - restart the associated `.service` unit, not the `.timer`, when you want to trigger an immediate run
 - reload `opendkim` and `postfix` if mail authentication or local MTA integration changed
+
+Default deployments keep using local sendmail/Postfix. If you keep the example config unchanged, ensure `/usr/sbin/sendmail` exists on the host.
 
 ## Known Limits
 

@@ -15,8 +15,8 @@ scanner:
 
 notifications:
   email_to:
-    - ops@example.net
-  email_from: no-reply@example.net
+    - root@localhost
+  email_from: cerberus@localhost
   method: sendmail
   sendmail_path: /usr/sbin/sendmail
   smtp_host: 127.0.0.1

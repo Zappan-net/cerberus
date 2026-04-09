@@ -53,7 +53,8 @@ The project is split into explicit layers:
 │   │   ├── sample-email.txt
 │   │   └── sample-log.txt
 │   ├── scripts
-│   │   └── install.sh
+│   │   ├── install.sh
+│   │   └── testmail
 │   └── systemd
 │       ├── vhost-cve-monitor.service
 │       ├── vhost-cve-monitor.timer
@@ -90,9 +91,9 @@ The project is split into explicit layers:
 ### Dependencies
 
 - Python 3.7+
-- `python3-pip`
-- `python3-venv` recommended
-- `postfix` configured locally
+- `python3-venv`
+- `python3-yaml`
+- a local MTA exposing `/usr/sbin/sendmail` if you use the default example config
 - Optional but recommended:
   - `npm`
   - `composer`
@@ -100,22 +101,59 @@ The project is split into explicit layers:
 
 ### Install
 
+Cerberus now installs into a dedicated virtual environment under `/opt/cerberus/.venv`. Debian marks the system Python as externally managed (PEP 668), so Cerberus no longer relies on `python3 -m pip install .` into the global interpreter.
+
+Admin-facing wrappers are exposed in `/usr/local/bin/`:
+
+- `/usr/local/bin/vhost-cve-monitor`
+- `/usr/local/bin/vhost-cve-monitor-testmail`
+
+Two installation paths are supported:
+
+- direct local install with the helper script
+- Debian package build/install, which still uses `/opt/cerberus/.venv` at runtime
+
 ```bash
 cd /opt/cerberus
-python3 -m pip install .
-sudo install -d /etc/vhost-cve-monitor /var/lib/vhost-cve-monitor
-sudo cp packaging/examples/config.yml /etc/vhost-cve-monitor/config.yml
-sudo cp packaging/systemd/*.service packaging/systemd/*.timer /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now vhost-cve-monitor.timer
-sudo systemctl enable --now vhost-cve-monitor-cve-sync.timer
-```
-
-Or use the helper:
-
-```bash
 sudo sh packaging/scripts/install.sh
 ```
+
+The helper is idempotent:
+
+- it creates `/opt/cerberus/.venv` if needed
+- it refreshes the package in that venv on rerun
+- it refreshes `/usr/local/bin/` wrappers on rerun
+- it installs a default `/etc/vhost-cve-monitor/config.yml` only if none exists yet
+- it does not overwrite an existing live config
+
+### Build a Debian package
+
+Cerberus can also be packaged as a simple `.deb` while keeping the dedicated runtime venv model.
+
+```bash
+cd /opt/cerberus
+dpkg-buildpackage -us -uc
+```
+
+Then install the generated package from the parent directory:
+
+```bash
+sudo dpkg -i ../cerberus_0.1.0-1_all.deb
+```
+
+The package installs:
+
+- the project files under `/opt/cerberus`
+- systemd units under `/lib/systemd/system`
+- runtime wrappers in `/usr/local/bin`
+
+Its `postinst` script then:
+
+- creates or reuses `/opt/cerberus/.venv`
+- creates that venv with `--system-site-packages`
+- installs or refreshes Cerberus inside that venv without downloading Python dependencies at package-install time
+- preserves `/etc/vhost-cve-monitor/config.yml` if it already exists
+- enables the timers
 
 ### Upgrade existing installations
 
@@ -123,7 +161,15 @@ If Cerberus is already installed on the machine, update it from the repository r
 
 ```bash
 cd /opt/cerberus
-python3 -m pip install .
+sudo sh packaging/scripts/install.sh
+```
+
+If you installed Cerberus from the Debian package, rebuild and reinstall the `.deb` instead of calling global `pip`:
+
+```bash
+cd /opt/cerberus
+dpkg-buildpackage -us -uc
+sudo dpkg -i ../cerberus_0.1.0-1_all.deb
 ```
 
 If you changed packaged files such as systemd units, reload systemd and ensure the timers are enabled:
@@ -147,7 +193,7 @@ Recommended post-upgrade checks:
 
 ```bash
 vhost-cve-monitor --config /etc/vhost-cve-monitor/config.yml --dry-run scan-once
-vhost-cve-monitor --config /etc/vhost-cve-monitor/config.yml test-mail --severity HIGH
+vhost-cve-monitor-testmail HIGH
 ```
 
 ## Configuration
@@ -160,6 +206,14 @@ Configuration split:
 - live machine configuration: `/etc/vhost-cve-monitor/config.yml`
 
 The repository file is intentionally generic and safe to publish. The `/etc` file is the local deployment configuration and may contain real recipients, sender domains, and environment-specific tuning.
+
+The default example config assumes a simple local Postfix/sendmail setup with:
+
+- `notifications.method: sendmail`
+- `notifications.email_to: [root@localhost]`
+- `notifications.email_from: cerberus@localhost`
+
+If you keep that example unchanged, ensure a local MTA provides `/usr/sbin/sendmail`.
 
 Main keys:
 
@@ -212,6 +266,12 @@ Single scan:
 vhost-cve-monitor --config /etc/vhost-cve-monitor/config.yml scan-once
 ```
 
+Directly from the venv:
+
+```bash
+/opt/cerberus/.venv/bin/vhost-cve-monitor --config /etc/vhost-cve-monitor/config.yml scan-once
+```
+
 Dry run:
 
 ```bash
@@ -246,6 +306,13 @@ Test mail with explicit severity:
 
 ```bash
 vhost-cve-monitor --config /etc/vhost-cve-monitor/config.yml test-mail --severity HIGH
+```
+
+Admin-friendly wrapper:
+
+```bash
+vhost-cve-monitor-testmail HIGH
+vhost-cve-monitor-testmail LOW MEDIUM HIGH
 ```
 
 Test mail with explicit severity and category:

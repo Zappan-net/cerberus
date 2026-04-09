@@ -1,12 +1,39 @@
-#!/usr/bin/env bash
+#!/bin/sh
 set -eu
 
 CONFIG_PATH="${CERBERUS_CONFIG:-/etc/vhost-cve-monitor/config.yml}"
 SLEEP_SECONDS="${CERBERUS_TESTMAIL_SLEEP:-3}"
-SEVERITIES="UNKNOWN INFO LOW WARNING MEDIUM HIGH CRITICAL"
+CERBERUS_BIN="${CERBERUS_BIN:-/opt/cerberus/.venv/bin/vhost-cve-monitor}"
+DEFAULT_SEVERITIES="UNKNOWN INFO LOW WARNING MEDIUM HIGH CRITICAL"
 
-for severity in ${SEVERITIES}; do
-    echo "Sending ${severity} test notification using ${CONFIG_PATH}"
-    vhost-cve-monitor --config "${CONFIG_PATH}" test-mail --severity "${severity}"
-    sleep "${SLEEP_SECONDS}"
+is_valid_severity() {
+    case "$1" in
+        UNKNOWN|INFO|LOW|WARNING|MEDIUM|HIGH|CRITICAL) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+normalize_severity() {
+    printf '%s' "$1" | tr '[:lower:]' '[:upper:]'
+}
+
+if [ "$#" -eq 0 ]; then
+    set -- ${DEFAULT_SEVERITIES}
+fi
+
+remaining="$#"
+for raw_severity in "$@"; do
+    severity="$(normalize_severity "$raw_severity")"
+    if ! is_valid_severity "$severity"; then
+        echo "Invalid severity: ${raw_severity}" >&2
+        echo "Valid severities: UNKNOWN INFO LOW WARNING MEDIUM HIGH CRITICAL" >&2
+        exit 1
+    fi
+
+    echo "test-mail ${severity}"
+    "${CERBERUS_BIN}" --config "${CONFIG_PATH}" test-mail --severity "${severity}"
+    remaining=$((remaining - 1))
+    if [ "${remaining}" -gt 0 ]; then
+        sleep "${SLEEP_SECONDS}"
+    fi
 done

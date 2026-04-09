@@ -707,6 +707,7 @@ Operational note:
 - after `systemctl daemon-reload`, active timers usually continue normally
 - use `systemctl enable --now ...timer` to ensure a timer is enabled
 - use `systemctl restart ...service` if you want to trigger an immediate scan
+- the packaged services call `/opt/cerberus/.venv/bin/vhost-cve-monitor` directly instead of relying on a globally installed Python package
 
 Why timers are preferred here:
 
@@ -714,6 +715,14 @@ Why timers are preferred here:
 - easy status inspection with `systemctl` and `journalctl`
 - persistent missed-run handling
 - simpler failure semantics
+
+Packaging note:
+
+- Debian systems now treat the system interpreter as externally managed
+- Cerberus therefore installs itself into `/opt/cerberus/.venv`
+- `/usr/local/bin/vhost-cve-monitor` and `/usr/local/bin/vhost-cve-monitor-testmail` are thin wrappers for operators
+- the repository also ships a minimal `debian/` packaging layout; the package installs files under `/opt/cerberus` and lets `postinst` create or refresh the venv
+- the Debian package uses `--system-site-packages` plus `python3-yaml` to avoid network-dependent `pip` resolution during package installation
 
 ## 8. Logging and observability
 
