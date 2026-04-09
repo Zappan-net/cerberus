@@ -8,6 +8,7 @@ from vhost_cve_monitor.advisory_logic import (
     build_recommendation,
     canonical_advisory_id,
     merge_fixed_versions,
+    severity_from_cvss,
     strongest_severity,
 )
 
@@ -39,6 +40,15 @@ class AdvisoryLogicTestCase(unittest.TestCase):
 
         self.assertIn("No fixed version is known", recommendation)
         self.assertIn("used at runtime or only during build/test", recommendation)
+
+    def test_severity_from_numeric_cvss_score(self) -> None:
+        self.assertEqual(severity_from_cvss("8.8"), "HIGH")
+
+    def test_severity_from_cvss_v3_vector(self) -> None:
+        self.assertEqual(
+            severity_from_cvss("CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"),
+            "CRITICAL",
+        )
 
 
 if __name__ == "__main__":

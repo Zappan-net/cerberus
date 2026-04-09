@@ -9,10 +9,45 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import List
 
-from .advisory_logic import format_fixed_versions, merge_fixed_versions, strongest_severity
+from .advisory_logic import format_fixed_versions, merge_fixed_versions, severity_from_cvss, strongest_severity
 from .models import Dependency, Vulnerability
 
 LOGGER = logging.getLogger(__name__)
+
+
+def _extract_osv_severity_candidates(item: dict, dependency: Dependency) -> List[tuple]:
+    candidates = []
+    top_level_database_specific = item.get("database_specific", {}).get("severity")
+    if top_level_database_specific:
+        candidates.append(("database_specific.severity", top_level_database_specific))
+
+    for index, entry in enumerate(item.get("severity", []) or []):
+        if not isinstance(entry, dict):
+            continue
+        for field_name in ("severity", "score"):
+            value = entry.get(field_name)
+            resolved = severity_from_cvss(value)
+            if resolved != "UNKNOWN":
+                candidates.append(("severity[{}].{}".format(index, field_name), value))
+
+    for affected_index, affected in enumerate(item.get("affected", []) or []):
+        affected_package = affected.get("package", {})
+        if (
+            affected_package.get("name") != dependency.name
+            or affected_package.get("ecosystem") != dependency.ecosystem
+        ):
+            continue
+        affected_database_specific = affected.get("database_specific", {}).get("severity")
+        if affected_database_specific:
+            candidates.append(
+                ("affected[{}].database_specific.severity".format(affected_index), affected_database_specific)
+            )
+        affected_ecosystem_specific = affected.get("ecosystem_specific", {}).get("severity")
+        if affected_ecosystem_specific:
+            candidates.append(
+                ("affected[{}].ecosystem_specific.severity".format(affected_index), affected_ecosystem_specific)
+            )
+    return candidates
 
 
 class CVEDatabase:
@@ -211,17 +246,15 @@ class CVEDatabase:
             severity = "UNKNOWN"
             fixed_versions = []
             affected_ranges = []
+            severity_candidates = _extract_osv_severity_candidates(item, dependency)
+            for _, candidate in severity_candidates:
+                severity = strongest_severity(severity, severity_from_cvss(candidate))
             for affected in item.get("affected", []):
                 affected_package = affected.get("package", {})
                 if (
                     affected_package.get("name") == dependency.name
                     and affected_package.get("ecosystem") == dependency.ecosystem
                 ):
-                    severity = strongest_severity(
-                        severity,
-                        affected.get("ecosystem_specific", {}).get("severity"),
-                        affected.get("database_specific", {}).get("severity"),
-                    )
                     for current_range in affected.get("ranges", []):
                         events = current_range.get("events", [])
                         fixed_versions.extend([entry.get("fixed") for entry in events if entry.get("fixed")])
@@ -237,6 +270,15 @@ class CVEDatabase:
                                 )
                             )
             references = [entry.get("url", "") for entry in item.get("references", []) if entry.get("url")]
+            LOGGER.debug(
+                "OSV severity resolution for %s %s (%s) advisory %s: candidates=%s selected=%s",
+                dependency.name,
+                dependency.version,
+                dependency.ecosystem,
+                item.get("id"),
+                ["{}={}".format(source, value) for source, value in severity_candidates] or ["fallback=UNKNOWN"],
+                severity,
+            )
             vulnerabilities.append(
                 Vulnerability(
                     vuln_id=item["id"],

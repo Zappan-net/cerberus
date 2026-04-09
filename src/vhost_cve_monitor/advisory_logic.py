@@ -16,6 +16,17 @@ SEVERITY_ORDER = {
 
 STANDARD_VULN_RE = re.compile(r"(GHSA-[A-Za-z0-9-]+|CVE-\d{4}-\d+)")
 SIMPLE_UPPER_BOUND_RE = re.compile(r"^\s*<?=?\s*v?([0-9][A-Za-z0-9._-]*)\s*$")
+CVSS_VECTOR_RE = re.compile(r"^CVSS:(3\.[01])/([A-Z]{1,3}:[A-Z0-9]/?)+$")
+
+CVSS_V3_AV = {"N": 0.85, "A": 0.62, "L": 0.55, "P": 0.2}
+CVSS_V3_AC = {"L": 0.77, "H": 0.44}
+CVSS_V3_UI = {"N": 0.85, "R": 0.62}
+CVSS_V3_S = {"U": "U", "C": "C"}
+CVSS_V3_CIA = {"H": 0.56, "L": 0.22, "N": 0.0}
+CVSS_V3_PR = {
+    "U": {"N": 0.85, "L": 0.62, "H": 0.27},
+    "C": {"N": 0.85, "L": 0.68, "H": 0.5},
+}
 
 
 def normalize_severity(value: str, category: str = "vulnerability") -> str:
@@ -38,6 +49,73 @@ def strongest_severity(*values: str) -> str:
         if SEVERITY_ORDER.get(candidate, -1) > SEVERITY_ORDER.get(best, -1):
             best = candidate
     return best
+
+
+def _round_up_cvss(score: float) -> float:
+    return int(score * 10 + 0.000001 + 0.999999) / 10.0
+
+
+def severity_from_cvss(value: Optional[str]) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return "UNKNOWN"
+    normalized = normalize_severity(raw)
+    if normalized != "UNKNOWN":
+        return normalized
+    try:
+        numeric = float(raw)
+    except ValueError:
+        numeric = None
+    if numeric is not None:
+        return severity_from_cvss_score(numeric)
+    if raw.upper().startswith("CVSS:3."):
+        score = _cvss_v3_base_score(raw)
+        if score is None:
+            return "UNKNOWN"
+        return severity_from_cvss_score(score)
+    return "UNKNOWN"
+
+
+def severity_from_cvss_score(score: float) -> str:
+    if score >= 9.0:
+        return "CRITICAL"
+    if score >= 7.0:
+        return "HIGH"
+    if score >= 4.0:
+        return "MEDIUM"
+    if score > 0:
+        return "LOW"
+    return "UNKNOWN"
+
+
+def _cvss_v3_base_score(vector: str) -> Optional[float]:
+    raw = str(vector or "").strip().upper()
+    if not raw.startswith("CVSS:3."):
+        return None
+    try:
+        parts = raw.split("/")
+        metrics = {}
+        for part in parts[1:]:
+            key, value = part.split(":", 1)
+            metrics[key] = value
+        scope = CVSS_V3_S[metrics["S"]]
+        impact_sub_score = 1 - (
+            (1 - CVSS_V3_CIA[metrics["C"]])
+            * (1 - CVSS_V3_CIA[metrics["I"]])
+            * (1 - CVSS_V3_CIA[metrics["A"]])
+        )
+        if scope == "U":
+            impact = 6.42 * impact_sub_score
+        else:
+            impact = 7.52 * (impact_sub_score - 0.029) - 3.25 * pow(impact_sub_score - 0.02, 15)
+        exploitability = 8.22 * CVSS_V3_AV[metrics["AV"]] * CVSS_V3_AC[metrics["AC"]] * CVSS_V3_PR[scope][metrics["PR"]] * CVSS_V3_UI[metrics["UI"]]
+        if impact <= 0:
+            return 0.0
+        if scope == "U":
+            return _round_up_cvss(min(impact + exploitability, 10))
+        return _round_up_cvss(min(1.08 * (impact + exploitability), 10))
+    except (KeyError, ValueError, ZeroDivisionError):
+        return None
 
 
 def canonical_advisory_id(vuln_id: str, aliases: Optional[Sequence[str]] = None) -> str:

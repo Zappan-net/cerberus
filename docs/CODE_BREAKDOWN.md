@@ -657,6 +657,8 @@ What happens:
 5. stale or missing entries are queried from OSV unless `--offline` is set
 6. `audits.py` optionally runs `composer audit`
 7. issues from OSV cache and issues from Composer are merged
+   OSV severity resolution now checks top-level `database_specific.severity` before matched `affected[*]` severity fields, which helps preserve GHSA severities instead of falling back to `UNKNOWN`.
+   If OSV only exposes a CVSS score or CVSS v3.x vector, Cerberus derives a canonical severity bucket from that score.
 8. `scanner.py` builds alert events
 9. `state_store.py` suppresses already known unchanged alerts
 10. `notify.py` sends only the resulting new notifications
