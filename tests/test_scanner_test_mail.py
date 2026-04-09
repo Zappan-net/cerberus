@@ -1,4 +1,8 @@
+import os
+import sys
 import unittest
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(__file__)), "src"))
 
 from vhost_cve_monitor.scanner import CerberusScanner
 
@@ -36,7 +40,7 @@ class ScannerTestMailTestCase(unittest.TestCase):
 
         self.assertEqual(event.category, "digest")
         self.assertEqual(event.metadata["severity"], "HIGH")
-        self.assertIn("[Cerberus][ALERT][HIGH][", event.subject)
+        self.assertIn("[Cerberus][HIGH][", event.subject)
         self.assertIn("Highest severity: HIGH", event.body)
 
 

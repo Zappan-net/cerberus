@@ -72,6 +72,8 @@ class Vulnerability:
     package_name: str
     ecosystem: str
     affected_version: str
+    fixed_version: Optional[str] = None
+    affected_range: Optional[str] = None
     references: List[str] = field(default_factory=list)
     aliases: List[str] = field(default_factory=list)
 

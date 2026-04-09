@@ -47,30 +47,30 @@ That gives better observability and restart behavior than a permanent Python pro
 
 The normal scan path is:
 
-1. [cli.py](/opt/cerberus/src/vhost_cve_monitor/cli.py)
+1. [cli.py](../src/vhost_cve_monitor/cli.py)
    Parses arguments, loads config, configures logging, instantiates `CerberusScanner`.
-2. [scanner.py](/opt/cerberus/src/vhost_cve_monitor/scanner.py)
+2. [scanner.py](../src/vhost_cve_monitor/scanner.py)
    Calls `load_vhosts()`.
-3. [nginx_parser.py](/opt/cerberus/src/vhost_cve_monitor/nginx_parser.py)
+3. [nginx_parser.py](../src/vhost_cve_monitor/nginx_parser.py)
    Parses nginx files and resolves useful includes.
-4. [stack_detection.py](/opt/cerberus/src/vhost_cve_monitor/stack_detection.py)
+4. [stack_detection.py](../src/vhost_cve_monitor/stack_detection.py)
    Applies explicit heuristics to determine likely stacks.
-5. [audits.py](/opt/cerberus/src/vhost_cve_monitor/audits.py)
+5. [audits.py](../src/vhost_cve_monitor/audits.py)
    Dispatches each stack to the proper collector and audit logic.
-6. [collectors.py](/opt/cerberus/src/vhost_cve_monitor/collectors.py)
+6. [collectors.py](../src/vhost_cve_monitor/collectors.py)
    Extracts dependency names and versions from lockfiles, manifests, virtualenvs, or service binaries.
-7. [cve_db.py](/opt/cerberus/src/vhost_cve_monitor/cve_db.py)
+7. [cve_db.py](../src/vhost_cve_monitor/cve_db.py)
    Returns cached vulnerability data or refreshes it from OSV if stale and network is allowed.
-8. [state_store.py](/opt/cerberus/src/vhost_cve_monitor/state_store.py)
+8. [state_store.py](../src/vhost_cve_monitor/state_store.py)
    Decides whether an alert should be emitted or suppressed as already known.
-9. [notify.py](/opt/cerberus/src/vhost_cve_monitor/notify.py)
+9. [notify.py](../src/vhost_cve_monitor/notify.py)
    Sends the resulting mail or prints it in dry-run mode.
 
 The scanner never assumes one stack per vhost. A vhost may produce multiple `StackMatch` entries if several markers are detected.
 
 ## 4. Module-by-module breakdown
 
-### 4.1 [models.py](/opt/cerberus/src/vhost_cve_monitor/models.py)
+### 4.1 [models.py](../src/vhost_cve_monitor/models.py)
 
 This file defines the central data structures exchanged across the project.
 
@@ -99,7 +99,7 @@ Key dataclasses:
 
 This separation keeps the rest of the code explicit. Data transformation is visible instead of hidden in ad hoc dicts.
 
-### 4.2 [config.py](/opt/cerberus/src/vhost_cve_monitor/config.py)
+### 4.2 [config.py](../src/vhost_cve_monitor/config.py)
 
 This module loads and merges configuration.
 
@@ -129,7 +129,7 @@ Design choice:
 - defaults are embedded in code so the program can still run with a minimal config
 - YAML is used only for human-readable operational settings
 
-### 4.3 [logging_utils.py](/opt/cerberus/src/vhost_cve_monitor/logging_utils.py)
+### 4.3 [logging_utils.py](../src/vhost_cve_monitor/logging_utils.py)
 
 This configures Python logging.
 
@@ -142,7 +142,7 @@ Behavior:
 
 This matters on real systems because a bad log path must not stop the monitor.
 
-### 4.4 [subprocess_utils.py](/opt/cerberus/src/vhost_cve_monitor/subprocess_utils.py)
+### 4.4 [subprocess_utils.py](../src/vhost_cve_monitor/subprocess_utils.py)
 
 This module wraps external command execution.
 
@@ -161,7 +161,7 @@ Design choice:
 
 This is one of the key anti-hang layers in the system.
 
-### 4.5 [nginx_parser.py](/opt/cerberus/src/vhost_cve_monitor/nginx_parser.py)
+### 4.5 [nginx_parser.py](../src/vhost_cve_monitor/nginx_parser.py)
 
 This module is a lightweight nginx parser, not a full nginx interpreter.
 
@@ -193,7 +193,7 @@ Current limit:
 
 - named `upstream {}` blocks are not resolved into target sockets or URLs yet
 
-### 4.6 [stack_detection.py](/opt/cerberus/src/vhost_cve_monitor/stack_detection.py)
+### 4.6 [stack_detection.py](../src/vhost_cve_monitor/stack_detection.py)
 
 This module applies explicit filesystem and upstream heuristics.
 
@@ -233,7 +233,7 @@ Current risk:
 - if a default root like `/home/webserv` is large, directory walking can become expensive
 - verbose mode helps reveal when time is spent here
 
-### 4.7 [collectors.py](/opt/cerberus/src/vhost_cve_monitor/collectors.py)
+### 4.7 [collectors.py](../src/vhost_cve_monitor/collectors.py)
 
 This module extracts package versions from stack-specific sources.
 
@@ -310,7 +310,7 @@ Behavior:
 - if the `gitea` binary exists, it is preferred
 - otherwise Cerberus looks for a parseable semver in `VERSION`
 
-### 4.8 [cve_db.py](/opt/cerberus/src/vhost_cve_monitor/cve_db.py)
+### 4.8 [cve_db.py](../src/vhost_cve_monitor/cve_db.py)
 
 This module implements the local vulnerability cache in SQLite.
 
@@ -377,7 +377,7 @@ This is what the `vhost-cve-monitor-cve-sync.timer` drives periodically.
 - no hybrid source selection yet
 - no Debian package security source yet
 
-### 4.9 [state_store.py](/opt/cerberus/src/vhost_cve_monitor/state_store.py)
+### 4.9 [state_store.py](../src/vhost_cve_monitor/state_store.py)
 
 This module is responsible for anti-spam behavior.
 
@@ -413,7 +413,7 @@ This directly implements:
 
 This is how Cerberus avoids mailing on every single transient scan problem.
 
-### 4.10 [notify.py](/opt/cerberus/src/vhost_cve_monitor/notify.py)
+### 4.10 [notify.py](../src/vhost_cve_monitor/notify.py)
 
 This module sends notification emails.
 
@@ -436,9 +436,9 @@ Operational note:
 
 - successful local submission only means Cerberus handed the message to the local MTA
 - remote delivery still depends on SPF, DKIM, recipient policy, and throttling
-- this was observed during live validation: Proton accepted `zap.one` test messages while Gmail rejected them until public authentication passes
+- this was validated during live testing: once SPF, DKIM, and DMARC were aligned, `zap.one` and `zapandrok.com` both reached a clean `mail-tester` result
 
-### 4.11 [audits.py](/opt/cerberus/src/vhost_cve_monitor/audits.py)
+### 4.11 [audits.py](../src/vhost_cve_monitor/audits.py)
 
 This module contains the stack-specific scanning logic.
 
@@ -464,6 +464,10 @@ For every supported stack:
 - collects dependencies from npm files
 - runs `npm audit --json --omit=dev` if `npm` and `package-lock.json` are present
 - parses `vulnerabilities` from the audit JSON
+- prefers standard identifiers such as `GHSA-...` or `CVE-...` when npm exposes them
+- falls back to explicit `NPM-ADVISORY-...` identifiers instead of leaving raw numeric internal IDs in alerts
+- keeps the strongest known severity when npm and OSV disagree or when one source only reports `UNKNOWN`
+- carries `fixAvailable` data forward so the rendered alert can mention the first known safe version
 
 #### Composer
 
@@ -487,7 +491,7 @@ Design choice:
 - the local cache correlation is always the common baseline
 - if the audit binary is missing, the stack still produces useful output
 
-### 4.12 [scanner.py](/opt/cerberus/src/vhost_cve_monitor/scanner.py)
+### 4.12 [scanner.py](../src/vhost_cve_monitor/scanner.py)
 
 This is the top-level orchestrator.
 
@@ -527,6 +531,13 @@ Two private methods create mails:
 - `_build_issue_notifications()`
 - `_build_failure_notifications()`
 
+Important implementation detail:
+
+- issue notifications are not emitted directly from raw `AuditIssue` objects anymore
+- Cerberus first normalizes logical findings by advisory id, package, installed version, and evidence path
+- only after that merge step does it project the finding back to each exposed vhost for rendering
+- this preserves infrastructure visibility while preventing contradictory `MEDIUM` and `UNKNOWN` variants of the same security event
+
 Issue fingerprints are built from:
 
 - vhost
@@ -535,6 +546,13 @@ Issue fingerprints are built from:
 - dependency version
 - advisory id
 - source file
+
+Logical finding identity is built from:
+
+- canonical advisory id
+- package name
+- installed version
+- evidence path
 
 Failure fingerprints are built from:
 
@@ -565,8 +583,9 @@ Additional test-mail behavior:
   - `INFO`
   - `UNKNOWN`
 - digest test messages include synthetic grouped alert lines
+- compact subjects mirror the real mail path and no longer include redundant markers such as both `ALERT` and `in this scan`
 
-### 4.13 [cli.py](/opt/cerberus/src/vhost_cve_monitor/cli.py)
+### 4.13 [cli.py](../src/vhost_cve_monitor/cli.py)
 
 This is the user-facing command entry point.
 
@@ -627,8 +646,8 @@ Cerberus currently uses one SQLite file path for both alert state and advisory c
 
 That means one database contains:
 
-- advisory cache tables from [cve_db.py](/opt/cerberus/src/vhost_cve_monitor/cve_db.py)
-- anti-spam state tables from [state_store.py](/opt/cerberus/src/vhost_cve_monitor/state_store.py)
+- advisory cache tables from [cve_db.py](../src/vhost_cve_monitor/cve_db.py)
+- anti-spam state tables from [state_store.py](../src/vhost_cve_monitor/state_store.py)
 
 This is operationally simple:
 
@@ -645,15 +664,22 @@ Current consequence:
 
 Relevant files:
 
-- [vhost-cve-monitor.service](/opt/cerberus/packaging/systemd/vhost-cve-monitor.service)
-- [vhost-cve-monitor.timer](/opt/cerberus/packaging/systemd/vhost-cve-monitor.timer)
-- [vhost-cve-monitor-cve-sync.service](/opt/cerberus/packaging/systemd/vhost-cve-monitor-cve-sync.service)
-- [vhost-cve-monitor-cve-sync.timer](/opt/cerberus/packaging/systemd/vhost-cve-monitor-cve-sync.timer)
+- [vhost-cve-monitor.service](../packaging/systemd/vhost-cve-monitor.service)
+- [vhost-cve-monitor.timer](../packaging/systemd/vhost-cve-monitor.timer)
+- [vhost-cve-monitor-cve-sync.service](../packaging/systemd/vhost-cve-monitor-cve-sync.service)
+- [vhost-cve-monitor-cve-sync.timer](../packaging/systemd/vhost-cve-monitor-cve-sync.timer)
 
 Recommended runtime model:
 
 - every hour, run a fresh scan
 - every six hours, refresh the known cache entries
+
+Operational note:
+
+- restarting a `.timer` does not force an immediate service run
+- after `systemctl daemon-reload`, active timers usually continue normally
+- use `systemctl enable --now ...timer` to ensure a timer is enabled
+- use `systemctl restart ...service` if you want to trigger an immediate scan
 
 Why timers are preferred here:
 
@@ -743,7 +769,7 @@ The implementation prefers precise versions and avoids guessing too much. That m
 
 ### Severity normalization is basic
 
-Different upstream tools format severity differently. The current implementation does not yet provide a strong unified severity mapping layer.
+Different upstream tools still format severity differently, but Cerberus now applies a deterministic precedence rule and never lets `UNKNOWN` override a known severity.
 
 ### Proxy-to-backend attribution stays heuristic
 
@@ -766,9 +792,9 @@ The current structure is intentionally extensible.
 
 To add a new stack cleanly:
 
-1. add heuristics in [stack_detection.py](/opt/cerberus/src/vhost_cve_monitor/stack_detection.py)
-2. add dependency collection in [collectors.py](/opt/cerberus/src/vhost_cve_monitor/collectors.py)
-3. add a scan branch in [audits.py](/opt/cerberus/src/vhost_cve_monitor/audits.py)
+1. add heuristics in [stack_detection.py](../src/vhost_cve_monitor/stack_detection.py)
+2. add dependency collection in [collectors.py](../src/vhost_cve_monitor/collectors.py)
+3. add a scan branch in [audits.py](../src/vhost_cve_monitor/audits.py)
 4. map the new ecosystem naming cleanly for `cve_db.py`
 5. add tests for detection and deduplication behavior
 
@@ -813,6 +839,8 @@ journalctl -u vhost-cve-monitor-cve-sync.service -n 200 --no-pager
 sqlite3 /var/lib/vhost-cve-monitor/state.db '.tables'
 ```
 
+If you need to inspect the normalized finding pipeline, also look at the rendered fixed version and advisory id chosen in dry-run output. This is the fastest way to confirm that OSV and runtime-audit data merged correctly.
+
 ## 15. Summary
 
 Cerberus is implemented as a practical, modular, low-dependency scanner:
@@ -830,3 +858,4 @@ The code is already usable for real-world Debian monitoring, but the next obviou
 - stronger Python dependency parsing
 - cache pruning
 - hybrid advisory sources beyond OSV
+- broader stack-aware remediation logic for additional ecosystems

@@ -4,47 +4,58 @@ import logging
 import re
 import socket
 import time
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from fnmatch import fnmatch
 from typing import Dict, List, Optional, Tuple
 
+from .advisory_logic import (
+    SEVERITY_ORDER,
+    build_recommendation,
+    canonical_advisory_id,
+    merge_fixed_versions,
+    normalize_severity,
+    strongest_severity,
+)
 from .audits import scan_stack
 from .cve_db import CVEDatabase
-from .models import NotificationEvent, ScanFailure, VhostScanResult
+from .models import AuditIssue, NotificationEvent, ScanFailure, VhostScanResult
 from .nginx_parser import load_vhosts
 from .notify import Mailer
 from .stack_detection import detect_stacks
 from .state_store import StateStore
 
 LOGGER = logging.getLogger(__name__)
-SEVERITY_ORDER = {
-    "CRITICAL": 5,
-    "HIGH": 4,
-    "MEDIUM": 3,
-    "WARNING": 2,
-    "LOW": 1,
-    "INFO": 0,
-    "UNKNOWN": -1,
-}
-
-
-def _normalize_severity(value: str, category: str = "vulnerability") -> str:
-    raw = str(value or "").upper()
-    if raw in ("CRITICAL", "HIGH", "MODERATE", "MEDIUM", "LOW", "INFO", "WARNING", "UNKNOWN"):
-        if raw == "MODERATE":
-            return "MEDIUM"
-        return raw
-    if raw in ("WARN",):
-        return "WARNING"
-    if category == "scan-failure":
-        return "WARNING"
-    return "UNKNOWN"
 
 
 def _clean_text(value: str) -> str:
     text = re.sub(r"\s+", " ", str(value or "")).strip()
     text = re.sub(r"\s*\.\s*", ".", text)
     return text
+
+
+@dataclass
+class FindingProjection:
+    vhost: str
+    stack: str
+    source_line: Optional[int]
+
+
+@dataclass
+class NormalizedFinding:
+    advisory_id: str
+    dependency: str
+    version: str
+    source_path: str
+    ecosystem: str
+    severity: str
+    summary: str
+    details: str
+    fixed_version: Optional[str]
+    affected_range: Optional[str]
+    aliases: List[str] = field(default_factory=list)
+    references: List[str] = field(default_factory=list)
+    projections: List[FindingProjection] = field(default_factory=list)
 
 
 def _is_allowed(name: str, path: Optional[str], config: Dict) -> bool:
@@ -91,7 +102,8 @@ class CerberusScanner:
         vhosts = load_vhosts(self.config)
         LOGGER.info("Loaded %s nginx vhosts", len(vhosts))
         results = []
-        notifications = []
+        issue_occurrences = []
+        failure_notifications = []
         for vhost in vhosts:
             if not _is_allowed(vhost.primary_server_name, vhost.primary_root, self.config):
                 LOGGER.info("Skipping filtered vhost %s", vhost.primary_server_name)
@@ -129,10 +141,20 @@ class CerberusScanner:
                     len(stack_result.failures),
                 )
                 result.stacks.append(stack_result)
-                notifications.extend(self._build_issue_notifications(vhost.primary_server_name, stack_result))
-                notifications.extend(self._build_failure_notifications(vhost.primary_server_name, stack_result.failures))
-            notifications.extend(self._build_failure_notifications(vhost.primary_server_name, result.failures))
+                for issue in stack_result.issues:
+                    issue_occurrences.append(
+                        {
+                            "vhost": vhost.primary_server_name,
+                            "stack": stack_result.stack.stack_name,
+                            "issue": issue,
+                        }
+                    )
+                failure_notifications.extend(
+                    self._build_failure_notifications(vhost.primary_server_name, stack_result.failures)
+                )
+            failure_notifications.extend(self._build_failure_notifications(vhost.primary_server_name, result.failures))
             results.append(result)
+        notifications = self._build_issue_notifications(issue_occurrences) + failure_notifications
         LOGGER.info("Prepared %s notifications", len(notifications))
         for notification in self._prepare_notifications_for_delivery(notifications):
             LOGGER.info("Sending %s notification: %s", notification.category, notification.subject)
@@ -173,9 +195,7 @@ class CerberusScanner:
         now = datetime.now(timezone.utc)
         highest = "UNKNOWN"
         for event in events:
-            severity = str(event.metadata.get("severity", "UNKNOWN")).upper()
-            if SEVERITY_ORDER.get(severity, -1) > SEVERITY_ORDER.get(highest, -1):
-                highest = severity
+            highest = strongest_severity(highest, str(event.metadata.get("severity", "UNKNOWN")).upper())
         digest_items = self._digest_items(events)
         lines = [
             f"Hostname: {hostname}",
@@ -183,7 +203,7 @@ class CerberusScanner:
             f"Events summarized: {len(digest_items)}",
             f"Highest severity: {highest}",
             "Summary: additional alerts were grouped to avoid flooding the destination mailbox.",
-            "Recommendation: inspect Cerberus logs and rerun a dry-run scan for the full detail.",
+            "Recommendation: upgrade the affected components to the fixed versions shown below, then rebuild lockfiles or dependencies before redeploying.",
             "",
             "Included alerts:",
         ]
@@ -193,19 +213,20 @@ class CerberusScanner:
                 source_suffix = " [{}:{}]".format(item["source_path"], item["source_line"])
             elif item["source_path"]:
                 source_suffix = " [{}]".format(item["source_path"])
+            fixed_suffix = ""
+            if item["fixed_version"]:
+                fixed_suffix = " -> fixed in {}".format(item["fixed_version"])
             lines.append(
-                "- {} | {} {} | {}{}".format(
+                "- {} | {} {}{} | {}{}".format(
                     item["vhost"],
                     item["dependency"],
                     item["version"],
+                    fixed_suffix,
                     item["vuln_id"],
                     source_suffix,
                 )
             )
-        if subject_all:
-            subject = "[Cerberus][ALERT][{}][{}] {} alerts in this scan".format(highest, hostname, len(digest_items))
-        else:
-            subject = "[Cerberus][ALERT][{}][{}] {} additional alerts grouped".format(highest, hostname, len(digest_items))
+        subject = "[Cerberus][{}][{}] {} alerts".format(highest, hostname, len(digest_items))
         return NotificationEvent(
             category="digest",
             fingerprint="digest:{}:{}".format(now.date().isoformat(), len(digest_items)),
@@ -226,6 +247,7 @@ class CerberusScanner:
                 "version": _clean_text(metadata.get("version", "unknown")),
                 "vuln_id": _clean_text(metadata.get("vuln_id", metadata.get("reason", "n/a"))),
                 "severity": _clean_text(metadata.get("severity", "UNKNOWN")).upper(),
+                "fixed_version": _clean_text(metadata.get("fixed_version", "")) or None,
                 "source_path": metadata.get("source_path"),
                 "source_line": metadata.get("source_line"),
             }
@@ -234,6 +256,7 @@ class CerberusScanner:
                 item["dependency"],
                 item["version"],
                 item["vuln_id"],
+                item["fixed_version"],
                 item["source_path"],
                 item["source_line"],
             )
@@ -252,64 +275,156 @@ class CerberusScanner:
             ),
         )
 
-    def _build_issue_notifications(self, vhost_name: str, stack_result) -> List[NotificationEvent]:
+    def _normalize_findings(self, occurrences: List[Dict]) -> List[NormalizedFinding]:
+        normalized = {}
+        for occurrence in occurrences:
+            issue = occurrence["issue"]
+            canonical_id = canonical_advisory_id(issue.vulnerability.vuln_id, issue.vulnerability.aliases)
+            key = (
+                canonical_id,
+                issue.dependency.name.lower(),
+                issue.dependency.version,
+                issue.dependency.source,
+            )
+            if key not in normalized:
+                normalized[key] = NormalizedFinding(
+                    advisory_id=canonical_id,
+                    dependency=issue.dependency.name,
+                    version=issue.dependency.version,
+                    source_path=issue.dependency.source,
+                    ecosystem=issue.dependency.ecosystem,
+                    severity=normalize_severity(issue.vulnerability.severity),
+                    summary=issue.vulnerability.summary,
+                    details=issue.vulnerability.details,
+                    fixed_version=issue.vulnerability.fixed_version,
+                    affected_range=issue.vulnerability.affected_range,
+                    aliases=list(issue.vulnerability.aliases),
+                    references=list(issue.vulnerability.references),
+                    projections=[
+                        FindingProjection(
+                            vhost=occurrence["vhost"],
+                            stack=occurrence["stack"],
+                            source_line=issue.dependency.source_line,
+                        )
+                    ],
+                )
+                continue
+            current = normalized[key]
+            current.severity = strongest_severity(current.severity, issue.vulnerability.severity)
+            if len(issue.vulnerability.summary or "") > len(current.summary or ""):
+                current.summary = issue.vulnerability.summary
+            if len(issue.vulnerability.details or "") > len(current.details or ""):
+                current.details = issue.vulnerability.details
+            current.fixed_version = merge_fixed_versions(current.fixed_version, issue.vulnerability.fixed_version)
+            current.affected_range = current.affected_range or issue.vulnerability.affected_range
+            for alias in issue.vulnerability.aliases:
+                if alias and alias not in current.aliases:
+                    current.aliases.append(alias)
+            for reference in issue.vulnerability.references:
+                if reference and reference not in current.references:
+                    current.references.append(reference)
+            projection = FindingProjection(
+                vhost=occurrence["vhost"],
+                stack=occurrence["stack"],
+                source_line=issue.dependency.source_line,
+            )
+            if not any(
+                existing.vhost == projection.vhost and existing.stack == projection.stack and existing.source_line == projection.source_line
+                for existing in current.projections
+            ):
+                current.projections.append(projection)
+        return sorted(
+            normalized.values(),
+            key=lambda item: (
+                -SEVERITY_ORDER.get(item.severity, -1),
+                item.advisory_id,
+                item.dependency.lower(),
+                item.version,
+                item.source_path,
+            ),
+        )
+
+    def _build_issue_notifications(self, occurrences: List[Dict]) -> List[NotificationEvent]:
         notifications = []
         hostname = socket.gethostname()
         now = datetime.now(timezone.utc)
-        for issue in stack_result.issues:
-            severity = _normalize_severity(issue.vulnerability.severity)
-            payload = {
-                "vhost": vhost_name,
-                "stack": stack_result.stack.stack_name,
-                "dependency": issue.dependency.name,
-                "version": issue.dependency.version,
-                "vuln_id": issue.vulnerability.vuln_id,
-                "severity": severity,
-                "source_path": issue.dependency.source,
-                "source_line": issue.dependency.source_line,
-            }
-            fingerprint = f"issue:{vhost_name}:{stack_result.stack.stack_name}:{issue.dependency.name}:{issue.vulnerability.vuln_id}"
-            fingerprint = (
-                "issue:{}:{}:{}:{}:{}:{}".format(
-                    vhost_name,
-                    stack_result.stack.stack_name,
-                    issue.dependency.name,
-                    issue.dependency.version,
-                    issue.vulnerability.vuln_id,
-                    issue.dependency.source,
-                )
+        for finding in self._normalize_findings(occurrences):
+            recommendation = build_recommendation(
+                ecosystem=finding.ecosystem,
+                stack=finding.projections[0].stack,
+                package_name=finding.dependency,
+                installed_version=finding.version,
+                fixed_version=finding.fixed_version,
+                affected_range=finding.affected_range,
             )
-            if not self.state.should_alert(fingerprint, payload):
-                continue
-            body = "\n".join(
-                [
+            for projection in finding.projections:
+                severity = normalize_severity(finding.severity)
+                payload = {
+                    "vhost": projection.vhost,
+                    "stack": projection.stack,
+                    "dependency": finding.dependency,
+                    "version": finding.version,
+                    "vuln_id": finding.advisory_id,
+                    "severity": severity,
+                    "fixed_version": finding.fixed_version,
+                    "affected_range": finding.affected_range,
+                    "source_path": finding.source_path,
+                    "source_line": projection.source_line,
+                    "ecosystem": finding.ecosystem,
+                }
+                fingerprint = "issue:{}:{}:{}:{}:{}:{}".format(
+                    projection.vhost,
+                    projection.stack,
+                    finding.dependency,
+                    finding.version,
+                    finding.advisory_id,
+                    finding.source_path,
+                )
+                if not self.state.should_alert(fingerprint, payload):
+                    continue
+                fixed_line = (
+                    "Fixed version: {}".format(finding.fixed_version)
+                    if finding.fixed_version
+                    else "Fixed version: unknown"
+                )
+                affected_line = (
+                    "Affected range: {}".format(finding.affected_range)
+                    if finding.affected_range
+                    else None
+                )
+                body_lines = [
                     f"Hostname: {hostname}",
                     f"Date: {now.isoformat()}",
-                    f"Vhost: {vhost_name}",
-                    f"Stack: {stack_result.stack.stack_name}",
-                    f"Dependency: {issue.dependency.name}",
-                    f"Detected version: {issue.dependency.version}",
-                    f"Source file: {issue.dependency.source}",
-                    "Source line: {}".format(issue.dependency.source_line if issue.dependency.source_line else "unknown"),
-                    f"CVE / Advisory: {issue.vulnerability.vuln_id}",
+                    f"Vhost: {projection.vhost}",
+                    f"Stack: {projection.stack}",
+                    f"Dependency: {finding.dependency}",
+                    f"Detected version: {finding.version}",
+                    fixed_line,
+                    "Source file: {}".format(finding.source_path),
+                    "Source line: {}".format(projection.source_line if projection.source_line else "unknown"),
+                    f"CVE / Advisory: {finding.advisory_id}",
                     f"Severity: {severity}",
-                    f"Summary: {issue.vulnerability.summary}",
-                    f"Recommendation: Review upstream fix and upgrade the affected component.",
+                    "Summary: {}".format(finding.summary or "No summary provided by upstream advisory sources."),
+                    "Recommendation: {}".format(recommendation),
                 ]
-            )
-            notifications.append(
-                NotificationEvent(
-                    category="vulnerability",
-                    fingerprint=fingerprint,
-                    subject=(
-                        f"[Cerberus][ALERT][{severity}][{hostname}] "
-                        f"{_clean_text(vhost_name)} {_clean_text(issue.dependency.name)} {_clean_text(issue.vulnerability.vuln_id)}"
-                    ),
-                    body=body,
-                    created_at=now,
-                    metadata=payload,
+                if affected_line:
+                    body_lines.insert(7, affected_line)
+                notifications.append(
+                    NotificationEvent(
+                        category="vulnerability",
+                        fingerprint=fingerprint,
+                        subject="[Cerberus][{}][{}] {} {} {}".format(
+                            severity,
+                            hostname,
+                            _clean_text(projection.vhost),
+                            _clean_text(finding.dependency),
+                            _clean_text(finding.advisory_id),
+                        ),
+                        body="\n".join(body_lines),
+                        created_at=now,
+                        metadata=payload,
+                    )
                 )
-            )
         return notifications
 
     def _build_failure_notifications(self, scope: str, failures: List[ScanFailure]) -> List[NotificationEvent]:
@@ -317,7 +432,7 @@ class CerberusScanner:
         hostname = socket.gethostname()
         now = datetime.now(timezone.utc)
         for failure in failures:
-            severity = _normalize_severity("warning", category="scan-failure")
+            severity = normalize_severity("warning", category="scan-failure")
             payload = {
                 "scope": scope,
                 "reason": failure.reason,
@@ -350,7 +465,7 @@ class CerberusScanner:
                 NotificationEvent(
                     category="scan-failure",
                     fingerprint=f"failure:{scope}:{failure.scope}:{failure.reason}",
-                    subject=f"[Cerberus][ALERT][{severity}][{hostname}] {scope} repeated scan failure: {failure.reason}",
+                    subject=f"[Cerberus][{severity}][{hostname}] {scope} repeated scan failure: {failure.reason}",
                     body=body,
                     created_at=now,
                     metadata=payload,
@@ -361,9 +476,9 @@ class CerberusScanner:
     def send_test_mail(self, severity: str = "INFO", category: str = "test") -> NotificationEvent:
         hostname = socket.gethostname()
         now = datetime.now(timezone.utc)
-        normalized_severity = _normalize_severity(severity, category=category)
+        normalized_severity = normalize_severity(severity, category=category)
         category = str(category or "test")
-        subject_prefix = "[Cerberus][ALERT][{}][{}]".format(normalized_severity, hostname)
+        subject_prefix = "[Cerberus][{}][{}]".format(normalized_severity, hostname)
         if category == "vulnerability":
             subject = "{} Test vulnerability on test.example.internal: demo-package TEST-0000".format(subject_prefix)
             body_lines = [
@@ -396,18 +511,18 @@ class CerberusScanner:
                 "Detail: test_failure simulated by test-mail",
             ]
         elif category == "digest":
-            subject = "{} 3 alerts in this scan".format(subject_prefix)
+            subject = "{} 3 alerts".format(subject_prefix)
             body_lines = [
                 f"Hostname: {hostname}",
                 f"Date: {now.isoformat()}",
                 "Events summarized: 3",
                 "Highest severity: {}".format(normalized_severity),
                 "Summary: additional alerts were grouped to avoid flooding the destination mailbox.",
-                "Recommendation: inspect Cerberus logs and rerun a dry-run scan for the full detail.",
+                "Recommendation: upgrade the affected components to the fixed versions shown below, then rebuild lockfiles or dependencies before redeploying.",
                 "",
                 "Included alerts:",
-                "- test.example.internal | demo-package 0.0.0 | TEST-0000 [/tmp/demo-manifest.lock:1]",
-                "- test.example.internal | demo-package 0.0.1 | TEST-0001 [/tmp/demo-manifest.lock:2]",
+                "- test.example.internal | demo-package 0.0.0 -> fixed in >= 0.0.1 | TEST-0000 [/tmp/demo-manifest.lock:1]",
+                "- test.example.internal | demo-package 0.0.1 -> fixed in >= 0.0.2 | TEST-0001 [/tmp/demo-manifest.lock:2]",
                 "- test.example.internal | demo-package 0.0.2 | TEST-0002 [/tmp/demo-manifest.lock:3]",
             ]
         else:

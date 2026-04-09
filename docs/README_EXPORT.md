@@ -110,6 +110,9 @@ The repository file is generic and safe to publish. The `/etc` file contains dep
 - Current recommended mode: one digest per scan.
 - Messages are handed off to local sendmail/Postfix.
 - Delivery success to the final recipient depends on DNS authentication and remote provider policy.
+- Digest subjects are intentionally short and operational, keeping only product, highest severity, host scope, and alert count.
+- Alerts and digests show fixed versions when upstream advisory data provides them.
+- Recommendations are stack-aware and depend on ecosystem, package manager context, and whether a fixed version is known.
 - `test-mail` can simulate explicit severities and categories.
 - Supported severities: `CRITICAL`, `HIGH`, `MEDIUM`, `WARNING`, `LOW`, `INFO`, `UNKNOWN`
 - Supported categories: `test`, `vulnerability`, `scan-failure`, `digest`
@@ -119,8 +122,18 @@ The repository file is generic and safe to publish. The `/etc` file contains dep
   - `vhost-cve-monitor --config /etc/vhost-cve-monitor/config.yml test-mail --severity WARNING --category scan-failure`
   - `vhost-cve-monitor --config /etc/vhost-cve-monitor/config.yml test-mail --severity MEDIUM --category digest`
 - Live validation note:
-  - Proton accepted `zap.one` mail during testing
-  - Gmail still rejected `zap.one` until SPF and DKIM pass publicly
+  - `zap.one` and `zapandrok.com` both reached a clean `mail-tester` score after SPF, DKIM, and DMARC were aligned
+
+## Upgrade Existing Installations
+
+If Cerberus is already installed on a machine:
+
+- update the package from the repository root with `python3 -m pip install .`
+- run `systemctl daemon-reload` after changing packaged unit files
+- use `systemctl enable --now ...timer` to ensure timers are enabled
+- if timers were already active, `daemon-reload` is usually enough unless the unit files changed structurally
+- restart the associated `.service` unit, not the `.timer`, when you want to trigger an immediate run
+- reload `opendkim` and `postfix` if mail authentication or local MTA integration changed
 
 ## Known Limits
 
@@ -128,6 +141,7 @@ The repository file is generic and safe to publish. The `/etc` file contains dep
 - Python dependency resolution is strongest when requirements are pinned or a local virtualenv exists.
 - Advisory quality depends on upstream OSV coverage and runtime audit tool availability.
 - Legacy or proxied deployments can still require stricter vhost-to-backend correlation logic.
+- Fixed-version accuracy depends on upstream advisory metadata. Some ecosystems expose only affected ranges, and Cerberus keeps that distinction explicit.
 
 ## Repository References
 

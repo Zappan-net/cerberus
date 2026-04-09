@@ -1,4 +1,8 @@
+import os
+import sys
 import unittest
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(__file__)), "src"))
 
 from vhost_cve_monitor.models import NotificationEvent
 from vhost_cve_monitor.notify import Mailer
@@ -18,7 +22,7 @@ class NotifyTestCase(unittest.TestCase):
         event = NotificationEvent(
             category="test",
             fingerprint="test",
-            subject="[Cerberus][ALERT][HIGH][host] Test notification",
+            subject="[Cerberus][HIGH][host] Test notification",
             body="Hostname: host\nSeverity: HIGH\nSummary: test",
             created_at=None,
             metadata={"severity": "HIGH"},

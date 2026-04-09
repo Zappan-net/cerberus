@@ -1,6 +1,10 @@
+import os
+import sys
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(__file__)), "src"))
 
 from vhost_cve_monitor.nginx_parser import parse_nginx_file
 

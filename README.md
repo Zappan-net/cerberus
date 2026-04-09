@@ -2,12 +2,12 @@
 
 Cerberus is a maintainable Python 3 monitor for Debian servers that inspects nginx vhosts, detects the application stack behind each vhost, runs stack-specific security audits when possible, correlates detected versions with a local SQLite advisory cache, and sends email alerts only for new or materially changed findings.
 
-License: MIT. See [LICENSE](/opt/cerberus/LICENSE).
+License: MIT. See [LICENSE](LICENSE).
 Author: Julien Wehrbach.
 
-Detailed internal documentation is available in [docs/CODE_BREAKDOWN.md](/opt/cerberus/docs/CODE_BREAKDOWN.md).
-Architecture diagrams are available in [docs/DIAGRAMS.md](/opt/cerberus/docs/DIAGRAMS.md).
-An editable office export source is available in [docs/README_EXPORT.md](/opt/cerberus/docs/README_EXPORT.md).
+Detailed internal documentation is available in [docs/CODE_BREAKDOWN.md](docs/CODE_BREAKDOWN.md).
+Architecture diagrams are available in [docs/DIAGRAMS.md](docs/DIAGRAMS.md).
+An editable office export source is available in [docs/README_EXPORT.md](docs/README_EXPORT.md).
 
 ## Architecture
 
@@ -126,13 +126,15 @@ cd /opt/cerberus
 python3 -m pip install .
 ```
 
-If you changed packaged files such as systemd units, reload systemd and restart the timers:
+If you changed packaged files such as systemd units, reload systemd and ensure the timers are enabled:
 
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl restart vhost-cve-monitor.timer
-sudo systemctl restart vhost-cve-monitor-cve-sync.timer
+sudo systemctl enable --now vhost-cve-monitor.timer
+sudo systemctl enable --now vhost-cve-monitor-cve-sync.timer
 ```
+
+If the timers were already active, `daemon-reload` is usually enough unless the unit files changed structurally. If you want to force an immediate run, restart the associated `.service` unit instead of the `.timer`.
 
 If you changed mail authentication or local MTA integration, also reload the relevant services:
 
@@ -150,11 +152,11 @@ vhost-cve-monitor --config /etc/vhost-cve-monitor/config.yml test-mail --severit
 
 ## Configuration
 
-Example file: [packaging/examples/config.yml](/opt/cerberus/packaging/examples/config.yml)
+Example file: [packaging/examples/config.yml](packaging/examples/config.yml)
 
 Configuration split:
 
-- repository default example: [packaging/examples/config.yml](/opt/cerberus/packaging/examples/config.yml)
+- repository default example: [packaging/examples/config.yml](packaging/examples/config.yml)
 - live machine configuration: `/etc/vhost-cve-monitor/config.yml`
 
 The repository file is intentionally generic and safe to publish. The `/etc` file is the local deployment configuration and may contain real recipients, sender domains, and environment-specific tuning.
@@ -249,10 +251,10 @@ vhost-cve-monitor --config /etc/vhost-cve-monitor/config.yml daemon
 
 Recommended unit files:
 
-- [vhost-cve-monitor.service](/opt/cerberus/packaging/systemd/vhost-cve-monitor.service)
-- [vhost-cve-monitor.timer](/opt/cerberus/packaging/systemd/vhost-cve-monitor.timer)
-- [vhost-cve-monitor-cve-sync.service](/opt/cerberus/packaging/systemd/vhost-cve-monitor-cve-sync.service)
-- [vhost-cve-monitor-cve-sync.timer](/opt/cerberus/packaging/systemd/vhost-cve-monitor-cve-sync.timer)
+- [vhost-cve-monitor.service](packaging/systemd/vhost-cve-monitor.service)
+- [vhost-cve-monitor.timer](packaging/systemd/vhost-cve-monitor.timer)
+- [vhost-cve-monitor-cve-sync.service](packaging/systemd/vhost-cve-monitor-cve-sync.service)
+- [vhost-cve-monitor-cve-sync.timer](packaging/systemd/vhost-cve-monitor-cve-sync.timer)
 
 The first timer performs scans. The second refreshes the local advisory cache for already known package/version tuples.
 
@@ -272,6 +274,7 @@ Mail body fields:
 - stack
 - dependency
 - detected version
+- fixed version when known
 - CVE or advisory id
 - severity
 - summary
@@ -279,24 +282,26 @@ Mail body fields:
 
 Mail presentation:
 
-- normalized subject prefix with `ALERT` and severity level
+- compact subject prefix with product, highest severity, host scope, and alert count
 - HTML version with color-coded severity banner
 - plain text fallback for minimal mail clients
 - severity-aware headers such as `X-Cerberus-Severity`, `X-Priority`, `Priority`, and `Importance`
+- digest items keep per-vhost visibility even when the same vulnerable project is exposed through multiple hostnames
+- recommendations are stack-aware and mention fixed versions when the advisory data allows it
 
 Operational note:
 
 - a successful Cerberus send means local handoff to `sendmail` or SMTP completed
 - final delivery still depends on remote acceptance and public mail authentication
-- in the current live validation, Proton accepted `zap.one` mail while Gmail still rejected it until SPF and DKIM pass publicly
+- in the current live validation, `zap.one` and `zapandrok.com` both reached a clean `mail-tester` score after SPF, DKIM, and DMARC were aligned
 
-Example: [packaging/examples/sample-email.txt](/opt/cerberus/packaging/examples/sample-email.txt)
+Example: [packaging/examples/sample-email.txt](packaging/examples/sample-email.txt)
 
 ## Logging
 
 By default logs go to stdout and can be collected by journald. A file path may also be configured.
 
-Example: [packaging/examples/sample-log.txt](/opt/cerberus/packaging/examples/sample-log.txt)
+Example: [packaging/examples/sample-log.txt](packaging/examples/sample-log.txt)
 
 ## Tests
 
@@ -307,10 +312,14 @@ PYTHONPATH=src python3 -m unittest discover -s tests -v
 Covered critical parts:
 
 - CLI parsing for `test-mail` severity and category simulation
+- advisory severity precedence and canonical advisory identifiers
+- stack-aware recommendation generation
+- fixed version extraction and rendering
 - dependency source line preservation where available
-- digest deduplication and highest-severity rendering
+- digest deduplication, compact subject rendering, and highest-severity rendering
 - nginx config parsing
 - stack detection guardrails for redirect-only vhosts, proxy-only vhosts, and build-root parent detection
+- logical finding normalization across multiple pipeline stages and vhosts
 - alert deduplication and repeated-failure threshold logic
 
 ## Example execution
@@ -331,8 +340,9 @@ Typical flow:
 2. Detect stacks from explicit markers.
 3. Collect dependency versions.
 4. Run optional ecosystem audit tools.
-5. Query or reuse the local SQLite advisory cache.
-6. Emit deduplicated notifications.
+5. Normalize advisories, severities, aliases, and fixed versions across audit-tool and local-cache sources.
+6. Query or reuse the local SQLite advisory cache.
+7. Project normalized findings back to the affected vhosts and emit deduplicated notifications.
 
 ## Known limits
 
@@ -342,6 +352,7 @@ Typical flow:
 - OSV does not cover every ecosystem with equal depth. The cache is only as complete as the upstream data for the detected packages.
 - Gitea version detection is heuristic unless the `gitea` binary is available or a `VERSION` file exists.
 - Projects behind `proxy_pass` without a readable local filesystem tree may only yield service-level detection, not full dependency extraction.
+- Fixed versions are only as accurate as the upstream advisory metadata. When Cerberus has to infer a first safe version from a range expression, it keeps the wording explicit and conservative.
 
 ## Improvement plan
 
@@ -349,5 +360,5 @@ Typical flow:
 2. Add Debian package correlation for proxied services installed through `apt`.
 3. Add better parsing for `pyproject.toml` and lockfiles from Poetry, Pipenv, and PDM.
 4. Add a plugin interface for new stacks such as Ruby, Java, or generic containers.
-5. Add richer severity normalization across OSV, npm, Composer, and pip-audit outputs.
-6. Add HTML email formatting and batched daily digests as an optional mode.
+5. Add richer remediation guidance for ecosystems beyond npm, Packagist, PyPI, and Go.
+6. Add optional report-level controls such as scheduled summary digests, alert suppression windows, and richer notification routing.

@@ -1,6 +1,10 @@
+import os
+import sys
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(__file__)), "src"))
 
 from vhost_cve_monitor.models import VhostConfig
 from vhost_cve_monitor.stack_detection import _detect_root_candidates, _walk_candidates, detect_stacks
