@@ -51,7 +51,7 @@ class StackDetectionTestCase(unittest.TestCase):
             default_root.mkdir()
             vhost = VhostConfig(
                 file_path="/etc/nginx/sites-enabled/proxy.conf",
-                server_names=["git.zap.one"],
+                server_names=["git.domain.tld"],
                 proxy_passes=["http://127.0.0.1:3000"],
             )
             config = {
@@ -73,7 +73,7 @@ class StackDetectionTestCase(unittest.TestCase):
             default_root.mkdir()
             vhost = VhostConfig(
                 file_path="/etc/nginx/sites-enabled/app.conf",
-                server_names=["zap.one"],
+                server_names=["domain.tld"],
                 roots=[str(explicit_root)],
                 proxy_passes=["http://127.0.0.1:3000"],
             )
@@ -96,7 +96,7 @@ class StackDetectionTestCase(unittest.TestCase):
             (app_root / "package.json").write_text("{}", encoding="utf-8")
             vhost = VhostConfig(
                 file_path="/etc/nginx/sites-enabled/app.conf",
-                server_names=["zap.one"],
+                server_names=["domain.tld"],
                 roots=[str(build_root)],
             )
             config = {

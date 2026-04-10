@@ -248,7 +248,7 @@ class NotifyTestCase(unittest.TestCase):
                 "hostname": "host",
                 "digest_items": [
                     {
-                        "vhost": "zap.one",
+                        "vhost": "domain.tld",
                         "stack": "nodejs",
                         "ecosystem": "npm",
                         "dependency": "webpack-dev-server",
@@ -261,7 +261,7 @@ class NotifyTestCase(unittest.TestCase):
                         "source_line": 3286,
                     },
                     {
-                        "vhost": "zap.one",
+                        "vhost": "domain.tld",
                         "stack": "nodejs",
                         "ecosystem": "npm",
                         "dependency": "postcss",

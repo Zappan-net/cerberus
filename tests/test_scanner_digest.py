@@ -41,11 +41,11 @@ class ScannerDigestTestCase(unittest.TestCase):
         event = NotificationEvent(
             category="vulnerability",
             fingerprint="x",
-            subject="[Cerberus][UNKNOWN][host] admin.zap.one serialize-javascript GHSA-1",
+            subject="[Cerberus][UNKNOWN][host] admin.domain.tld serialize-javascript GHSA-1",
             body="",
             created_at=datetime.now(timezone.utc),
             metadata={
-                "vhost": "admin. zap.one",
+                "vhost": "admin.domain.tld",
                 "dependency": "serialize-javascript",
                 "version": "6.0.2",
                 "vuln_id": "GHSA-1",
@@ -61,11 +61,11 @@ class ScannerDigestTestCase(unittest.TestCase):
         warning_event = NotificationEvent(
             category="scan-failure",
             fingerprint="y",
-            subject="[Cerberus][WARNING][host] admin.zap.one repeated scan failure",
+            subject="[Cerberus][WARNING][host] admin.domain.tld repeated scan failure",
             body="",
             created_at=datetime.now(timezone.utc),
             metadata={
-                "scope": "admin.zap.one",
+                "scope": "admin.domain.tld",
                 "reason": "pip_audit_unavailable",
                 "severity": "WARNING",
             },
@@ -78,7 +78,7 @@ class ScannerDigestTestCase(unittest.TestCase):
         self.assertIn("Summary: new or changed findings were grouped to avoid flooding the destination mailbox.", digest.body)
         self.assertIn("WARNING (1)", digest.body)
         self.assertIn("UNKNOWN (1)", digest.body)
-        self.assertIn("- admin.zap.one | nodejs / npm | [/tmp/package-lock.json:42]", digest.body)
+        self.assertIn("- admin.domain.tld | nodejs / npm | [/tmp/package-lock.json:42]", digest.body)
         self.assertIn("  [UNKNOWN] serialize-javascript 6.0.2 -> fixed in >= 6.0.3 | GHSA-1", digest.body)
         self.assertIn("  Summary: Remote code execution in serialize-javascript", digest.body)
         self.assertEqual(digest.body.count("serialize-javascript 6.0.2"), 1)
@@ -89,11 +89,11 @@ class ScannerDigestTestCase(unittest.TestCase):
         unknown = NotificationEvent(
             category="vulnerability",
             fingerprint="x1",
-            subject="[Cerberus][UNKNOWN][host] zap.one multer GHSA-1",
+            subject="[Cerberus][UNKNOWN][host] domain.tld multer GHSA-1",
             body="",
             created_at=datetime.now(timezone.utc),
             metadata={
-                "vhost": "zap.one",
+                "vhost": "domain.tld",
                 "dependency": "multer",
                 "version": "1.4.5",
                 "vuln_id": "GHSA-1",
@@ -108,11 +108,11 @@ class ScannerDigestTestCase(unittest.TestCase):
         high = NotificationEvent(
             category="vulnerability",
             fingerprint="x2",
-            subject="[Cerberus][HIGH][host] zap.one multer GHSA-1",
+            subject="[Cerberus][HIGH][host] domain.tld multer GHSA-1",
             body="",
             created_at=datetime.now(timezone.utc),
             metadata={
-                "vhost": "zap.one",
+                "vhost": "domain.tld",
                 "dependency": "multer",
                 "version": "1.4.5",
                 "vuln_id": "GHSA-1",
@@ -136,11 +136,11 @@ class ScannerDigestTestCase(unittest.TestCase):
         unknown = NotificationEvent(
             category="vulnerability",
             fingerprint="x3",
-            subject="[Cerberus][UNKNOWN][host] zap.one nth-check GHSA-2",
+            subject="[Cerberus][UNKNOWN][host] domain.tld nth-check GHSA-2",
             body="",
             created_at=datetime.now(timezone.utc),
             metadata={
-                "vhost": "zap.one",
+                "vhost": "domain.tld",
                 "dependency": "nth-check",
                 "version": "1.0.2",
                 "vuln_id": "GHSA-2",
@@ -165,11 +165,11 @@ class ScannerDigestTestCase(unittest.TestCase):
             NotificationEvent(
                 category="vulnerability",
                 fingerprint="x4",
-                subject="[Cerberus][UNKNOWN][host] zap.one postcss GHSA-3",
+                subject="[Cerberus][UNKNOWN][host] domain.tld postcss GHSA-3",
                 body="",
                 created_at=datetime.now(timezone.utc),
                 metadata={
-                    "vhost": "zap.one",
+                    "vhost": "domain.tld",
                     "dependency": "postcss",
                     "version": "7.0.39",
                     "vuln_id": "GHSA-3",
@@ -184,11 +184,11 @@ class ScannerDigestTestCase(unittest.TestCase):
             NotificationEvent(
                 category="vulnerability",
                 fingerprint="x5",
-                subject="[Cerberus][HIGH][host] zap.one postcss GHSA-3",
+                subject="[Cerberus][HIGH][host] domain.tld postcss GHSA-3",
                 body="",
                 created_at=datetime.now(timezone.utc),
                 metadata={
-                    "vhost": "zap.one",
+                    "vhost": "domain.tld",
                     "dependency": "postcss",
                     "version": "7.0.39",
                     "vuln_id": "GHSA-3",
@@ -213,11 +213,11 @@ class ScannerDigestTestCase(unittest.TestCase):
         high_event = NotificationEvent(
             category="vulnerability",
             fingerprint="h1",
-            subject="[Cerberus][HIGH][host] zap.one webpack-dev-server GHSA-H",
+            subject="[Cerberus][HIGH][host] domain.tld webpack-dev-server GHSA-H",
             body="",
             created_at=datetime.now(timezone.utc),
             metadata={
-                "vhost": "zap.one",
+                "vhost": "domain.tld",
                 "dependency": "webpack-dev-server",
                 "version": "4.15.2",
                 "vuln_id": "GHSA-H",
@@ -233,11 +233,11 @@ class ScannerDigestTestCase(unittest.TestCase):
         medium_event = NotificationEvent(
             category="vulnerability",
             fingerprint="m1",
-            subject="[Cerberus][MEDIUM][host] zap.one postcss GHSA-M",
+            subject="[Cerberus][MEDIUM][host] domain.tld postcss GHSA-M",
             body="",
             created_at=datetime.now(timezone.utc),
             metadata={
-                "vhost": "zap.one",
+                "vhost": "domain.tld",
                 "dependency": "postcss",
                 "version": "7.0.39",
                 "vuln_id": "GHSA-M",
@@ -253,11 +253,11 @@ class ScannerDigestTestCase(unittest.TestCase):
         medium_event_2 = NotificationEvent(
             category="vulnerability",
             fingerprint="m2",
-            subject="[Cerberus][MEDIUM][host] admin.zap.one nth-check GHSA-M2",
+            subject="[Cerberus][MEDIUM][host] admin.domain.tld nth-check GHSA-M2",
             body="",
             created_at=datetime.now(timezone.utc),
             metadata={
-                "vhost": "admin.zap.one",
+                "vhost": "admin.domain.tld",
                 "dependency": "nth-check",
                 "version": "1.0.2",
                 "vuln_id": "GHSA-M2",
@@ -280,13 +280,13 @@ class ScannerDigestTestCase(unittest.TestCase):
         self.assertLess(digest.body.index("HIGH (1)"), digest.body.index("MEDIUM (2)"))
         self.assertIn("Recommendation: prioritize these npm dependency upgrades first", digest.body)
         self.assertIn("Recommendation: schedule these npm dependency upgrades", digest.body)
-        self.assertIn("- zap.one | nodejs / npm | [/tmp/package-lock.json:3286]", digest.body)
+        self.assertIn("- domain.tld | nodejs / npm | [/tmp/package-lock.json:3286]", digest.body)
         self.assertIn("  [HIGH] webpack-dev-server 4.15.2 -> fixed in >= 5.2.1 | GHSA-H", digest.body)
         self.assertIn("  Summary: Exposure of webpack-dev-server dev middleware", digest.body)
-        self.assertIn("- zap.one | nodejs / npm | [/tmp/package-lock.json:2247]", digest.body)
+        self.assertIn("- domain.tld | nodejs / npm | [/tmp/package-lock.json:2247]", digest.body)
         self.assertIn("  [MEDIUM] postcss 7.0.39 -> fixed in >= 8.4.31 | GHSA-M", digest.body)
         self.assertIn("  Summary: Line return parsing error in PostCSS", digest.body)
-        self.assertIn("- admin.zap.one | nodejs / npm | [/tmp/package-lock.json:17872]", digest.body)
+        self.assertIn("- admin.domain.tld | nodejs / npm | [/tmp/package-lock.json:17872]", digest.body)
         self.assertIn("  [MEDIUM] nth-check 1.0.2 -> fixed in >= 2.0.1 | GHSA-M2", digest.body)
         self.assertIn("  Summary: Inefficient Regular Expression Complexity in nth-check", digest.body)
 

@@ -80,8 +80,8 @@ class ScannerFindingsTestCase(unittest.TestCase):
             references=[],
         )
         occurrences = [
-            {"vhost": "zap.one", "stack": "nodejs", "issue": AuditIssue(dependency, medium_vuln, "npm-audit")},
-            {"vhost": "admin.zap.one", "stack": "nodejs", "issue": AuditIssue(dependency, unknown_vuln, "osv-cache")},
+            {"vhost": "domain.tld", "stack": "nodejs", "issue": AuditIssue(dependency, medium_vuln, "npm-audit")},
+            {"vhost": "admin.domain.tld", "stack": "nodejs", "issue": AuditIssue(dependency, unknown_vuln, "osv-cache")},
         ]
 
         notifications = scanner._build_issue_notifications(occurrences)
@@ -89,9 +89,9 @@ class ScannerFindingsTestCase(unittest.TestCase):
 
         self.assertEqual(len(notifications), 2)
         self.assertTrue(all(item.metadata["severity"] == "MEDIUM" for item in notifications))
-        self.assertIn("[Cerberus][MEDIUM][zap.one] 2 alerts", digest.subject)
-        self.assertIn("- zap.one | nodejs / npm | [/home/webserv/zap-and-rok/package-lock.json:17872]", digest.body)
-        self.assertIn("- admin.zap.one | nodejs / npm | [/home/webserv/zap-and-rok/package-lock.json:17872]", digest.body)
+        self.assertIn("[Cerberus][MEDIUM][domain.tld] 2 alerts", digest.subject)
+        self.assertIn("- domain.tld | nodejs / npm | [/home/webserv/zap-and-rok/package-lock.json:17872]", digest.body)
+        self.assertIn("- admin.domain.tld | nodejs / npm | [/home/webserv/zap-and-rok/package-lock.json:17872]", digest.body)
         self.assertIn("  [MEDIUM] nth-check 1.0.2 -> fixed in >= 2.0.1 | GHSA-rp65-9cf3-cjxr", digest.body)
 
     def test_single_alert_subject_is_compact_and_includes_fixed_version_and_recommendation(self) -> None:
@@ -123,7 +123,7 @@ class ScannerFindingsTestCase(unittest.TestCase):
         )
 
         self.assertEqual(len(notifications), 1)
-        self.assertIn("[Cerberus][HIGH][zap.one] app.example.net symfony/http-foundation CVE-2026-1000", notifications[0].subject)
+        self.assertIn("[Cerberus][HIGH][domain.tld] app.example.net symfony/http-foundation CVE-2026-1000", notifications[0].subject)
         self.assertIn("Fixed version: >= 5.4.46", notifications[0].body)
         self.assertIn("composer update symfony/http-foundation", notifications[0].body)
         self.assertIn("used at runtime or only during build/test", notifications[0].body)
@@ -153,7 +153,7 @@ class ScannerFindingsTestCase(unittest.TestCase):
                 aliases=[],
                 references=[],
             )
-            occurrences.append({"vhost": "zap.one", "stack": "nodejs", "issue": AuditIssue(dependency, vuln, "npm-audit")})
+            occurrences.append({"vhost": "domain.tld", "stack": "nodejs", "issue": AuditIssue(dependency, vuln, "npm-audit")})
 
         notifications = scanner._build_issue_notifications(occurrences)
         digest = scanner._build_digest_notification(notifications, subject_all=True)

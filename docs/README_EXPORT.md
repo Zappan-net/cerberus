@@ -129,7 +129,7 @@ The repository file is generic and safe to publish. The `/etc` file contains dep
   - `vhost-cve-monitor --config /etc/vhost-cve-monitor/config.yml test-mail --category vulnerability --stack nodejs --package lodash --installed-version 4.17.23 --fixed-version ">= 4.17.24" --advisory-id GHSA-35jh-r3h4-6jhm`
 - Unhandled Cerberus execution failures generate a direct `internal-error` mail with a GitHub bug-report hint and are not wrapped into digest mode.
 - Live validation note:
-  - `zap.one` and `zapandrok.com` both reached a clean `mail-tester` score after SPF, DKIM, and DMARC were aligned
+  - delivery reached a clean `mail-tester` score after SPF, DKIM, and DMARC were aligned
 
 ## Upgrade Existing Installations
 

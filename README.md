@@ -458,7 +458,7 @@ Operational note:
 
 - a successful Cerberus send means local handoff to `sendmail` or the configured SMTP relay completed
 - final delivery still depends on remote acceptance and public mail authentication
-- in the current live validation, `zap.one` and `zapandrok.com` both reached a clean `mail-tester` score after SPF, DKIM, and DMARC were aligned
+- in the current live validation, mail delivery reached a clean `mail-tester` score after SPF, DKIM, and DMARC were aligned
 
 Example: [packaging/examples/sample-email.txt](packaging/examples/sample-email.txt)
 

@@ -21,8 +21,8 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "repeated_failure_threshold": 3,
     },
     "notifications": {
-        "email_to": ["zappan.net@gmail.com"],
-        "email_from": "no-reply@zapandrok.com",
+        "email_to": ["root@localhost"],
+        "email_from": "cerberus@localhost",
         "method": "sendmail",
         "sendmail_path": "/usr/sbin/sendmail",
         "smtp_host": "127.0.0.1",

@@ -14,7 +14,7 @@
 
 ### Changed
 
-- Digest subjects are shorter and operationally focused, for example `[Cerberus][MEDIUM][zap.one] 2 alerts`.
+- Digest subjects are shorter and operationally focused, for example `[Cerberus][MEDIUM][domain.tld] 2 alerts`.
 - `UNKNOWN` no longer overrides a known severity during finding enrichment.
 - OSV severity extraction now checks top-level `database_specific.severity` before matched `affected[*]` metadata and logs the candidate fields chosen during debug runs.
 - When OSV only exposes CVSS scores or CVSS v3.x vectors, Cerberus now derives a canonical severity instead of falling back to `UNKNOWN`.

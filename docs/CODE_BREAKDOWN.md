@@ -440,7 +440,7 @@ Operational note:
 
 - successful local submission only means Cerberus handed the message to the local MTA
 - remote delivery still depends on SPF, DKIM, recipient policy, and throttling
-- this was validated during live testing: once SPF, DKIM, and DMARC were aligned, `zap.one` and `zapandrok.com` both reached a clean `mail-tester` result
+- this was validated during live testing: once SPF, DKIM, and DMARC were aligned, delivery reached a clean `mail-tester` result
 
 ### 4.11 [audits.py](../src/vhost_cve_monitor/audits.py)
 
