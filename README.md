@@ -232,6 +232,7 @@ Main keys:
 - `notifications.smtp_password_env`: environment variable name holding the SMTP password; preferred over inline secrets.
 - `notifications.max_emails_per_run`: hard cap per scan cycle, with overflow grouped into one digest mail.
 - `notifications.summary_only`: when enabled, one scan generates one single summary mail containing every alert from that run.
+- digest mails keep the differential-alerting model, group retained findings by severity, and render advisory summaries when upstream data provides them.
 - `filters.*`: allowlist/blocklist for vhosts and paths.
 
 Authenticated SMTP examples:

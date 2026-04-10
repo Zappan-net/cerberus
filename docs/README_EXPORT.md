@@ -114,6 +114,7 @@ The repository file is generic and safe to publish. The `/etc` file contains dep
 - Delivery success to the final recipient depends on DNS authentication and remote provider policy.
 - Digest subjects are intentionally short and operational, keeping only product, highest severity, host scope, and alert count.
 - Alerts and digests show fixed versions when upstream advisory data provides them.
+- Digest mails keep the differential-alerting model, but now render retained findings by severity block and include advisory summaries when available.
 - Recommendations are stack-aware and depend on ecosystem, package manager context, and whether a fixed version is known.
 - `test-mail` can simulate explicit severities, categories, and stack-specific vulnerability samples.
 - Supported severities: `CRITICAL`, `HIGH`, `MEDIUM`, `WARNING`, `LOW`, `INFO`, `UNKNOWN`

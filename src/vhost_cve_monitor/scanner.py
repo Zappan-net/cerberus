@@ -211,7 +211,7 @@ class CerberusScanner:
             f"Findings: {len(digest_items)}",
             f"Highest severity: {highest}",
             f"Breakdown: {breakdown}",
-            "Summary: additional alerts were grouped to avoid flooding the destination mailbox.",
+            "Summary: new or changed findings were grouped to avoid flooding the destination mailbox.",
         ]
         for severity, items in severity_groups:
             lines.extend(
@@ -231,16 +231,26 @@ class CerberusScanner:
                 if item["fixed_version"]:
                     fixed_suffix = " -> fixed in {}".format(item["fixed_version"])
                 lines.append(
-                    "- {} | [{}] {} {}{} | {}{}".format(
+                    "- {} | {}{}{}".format(
                         item["vhost"],
+                        self._digest_stack_context(item),
+                        " | {}".format(source_suffix.strip()) if source_suffix else "",
+                        "",
+                    )
+                )
+                lines.append(
+                    "  [{}] {} {}{} | {}".format(
                         severity,
                         item["dependency"],
                         item["version"],
                         fixed_suffix,
                         item["vuln_id"],
-                        source_suffix,
                     )
                 )
+                if item.get("advisory_summary"):
+                    lines.append("  Summary: {}".format(item["advisory_summary"]))
+                if item.get("affected_range"):
+                    lines.append("  Affected range: {}".format(item["affected_range"]))
         subject = "[Cerberus][{}][{}] {} alerts".format(highest, hostname, len(digest_items))
         return NotificationEvent(
             category="digest",
@@ -248,7 +258,7 @@ class CerberusScanner:
             subject=subject,
             body="\n".join(lines),
             created_at=now,
-            metadata={"severity": highest, "events": len(digest_items)},
+            metadata={"severity": highest, "events": len(digest_items), "digest_items": digest_items, "hostname": hostname},
         )
 
     def _digest_items(self, events: List[NotificationEvent]) -> List[Dict[str, object]]:
@@ -267,6 +277,8 @@ class CerberusScanner:
                 "category": event.category,
                 "ecosystem": _clean_text(metadata.get("ecosystem", "")) or None,
                 "stack": _clean_text(metadata.get("stack", "")) or None,
+                "advisory_summary": _clean_text(metadata.get("advisory_summary", "")) or None,
+                "affected_range": _clean_text(metadata.get("affected_range", "")) or None,
             }
             key = (
                 item["vhost"],
@@ -281,6 +293,10 @@ class CerberusScanner:
                 items[key]["severity"] = strongest_severity(str(items[key]["severity"]), str(item["severity"]))
                 if not items[key]["fixed_version"] and item["fixed_version"]:
                     items[key]["fixed_version"] = item["fixed_version"]
+                if not items[key]["advisory_summary"] and item["advisory_summary"]:
+                    items[key]["advisory_summary"] = item["advisory_summary"]
+                if not items[key]["affected_range"] and item["affected_range"]:
+                    items[key]["affected_range"] = item["affected_range"]
                 continue
             items[key] = item
         return sorted(
@@ -395,6 +411,17 @@ class CerberusScanner:
             "dependency state, and validate runtime usage before deployment."
         )
 
+    def _digest_stack_context(self, item: Dict[str, object]) -> str:
+        stack = str(item.get("stack") or "").strip()
+        ecosystem = str(item.get("ecosystem") or "").strip()
+        if stack and ecosystem:
+            return "{} / {}".format(stack, ecosystem)
+        if ecosystem:
+            return ecosystem
+        if stack:
+            return stack
+        return "unknown stack"
+
     def _normalize_findings(self, occurrences: List[Dict]) -> List[NormalizedFinding]:
         normalized = {}
         for occurrence in occurrences:
@@ -488,6 +515,7 @@ class CerberusScanner:
                     "severity": severity,
                     "fixed_version": finding.fixed_version,
                     "affected_range": finding.affected_range,
+                    "advisory_summary": finding.summary,
                     "source_path": finding.source_path,
                     "source_line": projection.source_line,
                     "ecosystem": finding.ecosystem,

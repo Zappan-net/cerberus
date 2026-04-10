@@ -589,6 +589,7 @@ Additional test-mail behavior:
   - `INFO`
   - `UNKNOWN`
 - digest test messages include synthetic grouped alert lines
+- real digest mails are rendered from the final retained finding set, then split into explicit severity blocks with per-block recommendations
 - vulnerability test messages can exercise stack-aware remediation text without waiting for a real scan finding
 - internal-error test messages exercise the dedicated daemon failure path and the GitHub bug-report hint
 - compact subjects mirror the real mail path and no longer include redundant markers such as both `ALERT` and `in this scan`

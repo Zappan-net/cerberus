@@ -26,6 +26,41 @@ class _FakeResponse:
 
 
 class CVEDatabaseTestCase(unittest.TestCase):
+    def test_store_and_lookup_preserve_summary_for_notifications(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db = CVEDatabase(os.path.join(tmp, "state.db"))
+            dependency = Dependency(
+                ecosystem="npm",
+                name="postcss",
+                version="7.0.39",
+                source="/tmp/package-lock.json",
+            )
+            payload = {
+                "vulns": [
+                    {
+                        "id": "GHSA-7fh5-64p2-3v2j",
+                        "summary": "Line return parsing error in PostCSS",
+                        "database_specific": {"severity": "MEDIUM"},
+                        "affected": [
+                            {
+                                "package": {"name": "postcss", "ecosystem": "npm"},
+                                "ranges": [{"type": "SEMVER", "events": [{"introduced": "0"}, {"fixed": "8.4.31"}]}],
+                            }
+                        ],
+                        "aliases": ["GHSA-7fh5-64p2-3v2j"],
+                    }
+                ]
+            }
+
+            with patch("urllib.request.urlopen", return_value=_FakeResponse(payload)):
+                advisories = db._fetch_osv(dependency)
+            db._store_query_result(dependency, advisories)
+
+            cached = db.lookup(dependency)
+
+            self.assertEqual(len(cached), 1)
+            self.assertEqual(cached[0].summary, "Line return parsing error in PostCSS")
+
     def test_fetch_osv_prefers_top_level_database_specific_severity(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             db = CVEDatabase(os.path.join(tmp, "state.db"))
