@@ -1,6 +1,31 @@
 # Cerberus
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/)
+[![Tested on Debian 12](https://img.shields.io/badge/Debian-12-red.svg)](https://www.debian.org/)
+[![Release](https://img.shields.io/github/v/release/Zappan-net/cerberus)](https://github.com/Zappan-net/cerberus/releases)
+[![Last Commit](https://img.shields.io/github/last-commit/Zappan-net/cerberus)](https://github.com/Zappan-net/cerberus/commits/main)
+
 Cerberus is a maintainable Python 3 monitor for Debian servers that inspects nginx vhosts, detects the application stack behind each vhost, runs stack-specific security audits when possible, correlates detected versions with a local SQLite advisory cache, and sends email alerts only for new or materially changed findings.
+
+## Table of Contents
+
+- [Features](#features)
+- [Architecture](#architecture)
+- [Installation](#installation)
+- [Configuration](#configuration)
+- [Usage](#usage)
+- [Notification Examples](#notification-examples)
+- [Known Limits](#known-limits)
+- [Improvement Plan](#improvement-plan)
+
+## Features
+
+- built for classic Debian hosts with multiple nginx vhosts and mixed stacks
+- keeps a local SQLite advisory cache and still works in offline scans against cached data
+- sends readable HTML alerts with severity grouping, fixed versions, and concise remediation hints
+
+![Cerberus HTML alert example](docs/mail-example-short.png)
 
 License: MIT. See [LICENSE](LICENSE).
 Author: Julien Wehrbach.
@@ -261,7 +286,7 @@ notifications:
 
 Do not enable both `smtp_ssl` and `smtp_starttls` at the same time.
 
-## CLI
+## Usage
 
 Single scan:
 
@@ -392,7 +417,7 @@ Recommended unit files:
 
 The first timer performs scans. The second refreshes the local advisory cache for already known package/version tuples.
 
-## Notification format
+## Notification Examples
 
 Cerberus sends a mail only when:
 
@@ -422,6 +447,12 @@ Mail presentation:
 - severity-aware headers such as `X-Cerberus-Severity`, `X-Priority`, `Priority`, and `Importance`
 - digest items keep per-vhost visibility even when the same vulnerable project is exposed through multiple hostnames
 - recommendations are stack-aware and mention fixed versions when the advisory data allows it
+
+## Severity-grouped HTML email example
+
+Cerberus sends readable HTML alert emails with per-severity grouping, concise remediation guidance, and a plain-text fallback.
+
+![Cerberus severity-grouped HTML email example](docs/mail-example.png)
 
 Operational note:
 
