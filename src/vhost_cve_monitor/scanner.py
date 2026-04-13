@@ -101,16 +101,36 @@ class CerberusScanner:
         return self.cve_db.refresh_known_packages(allow_network=self.allow_network)
 
     def export_findings(self) -> Dict:
-        return self.state.export_current_findings()
+        exported = self.state.export_current_findings()
+        if exported.get("scanned_at") is None:
+            LOGGER.info("No materialized findings snapshot found, running a collection pass for export")
+            now, _results, issue_occurrences, _failures = self._collect_scan_data()
+            self.state.replace_current_findings(
+                self._current_findings_snapshot(issue_occurrences),
+                scanned_at=now.isoformat(),
+            )
+            exported = self.state.export_current_findings()
+        return exported
 
     def scan_once(self) -> Tuple[List[VhostScanResult], List[NotificationEvent]]:
         LOGGER.info("Starting scan cycle")
+        now, results, issue_occurrences, failure_notifications = self._collect_scan_data()
+        self.state.replace_current_findings(self._current_findings_snapshot(issue_occurrences), scanned_at=now.isoformat())
+        notifications = self._build_issue_notifications(issue_occurrences) + failure_notifications
+        LOGGER.info("Prepared %s notifications", len(notifications))
+        for notification in self._prepare_notifications_for_delivery(notifications):
+            LOGGER.info("Sending %s notification: %s", notification.category, notification.subject)
+            self.mailer.send(notification)
+        LOGGER.info("Scan cycle completed")
+        return results, notifications
+
+    def _collect_scan_data(self) -> Tuple[datetime, List[VhostScanResult], List[Dict], List[NotificationEvent]]:
         now = datetime.now(timezone.utc)
         vhosts = load_vhosts(self.config)
         LOGGER.info("Loaded %s nginx vhosts", len(vhosts))
-        results = []
-        issue_occurrences = []
-        failure_notifications = []
+        results: List[VhostScanResult] = []
+        issue_occurrences: List[Dict] = []
+        failure_notifications: List[NotificationEvent] = []
         for vhost in vhosts:
             if not _is_allowed(vhost.primary_server_name, vhost.primary_root, self.config):
                 LOGGER.info("Skipping filtered vhost %s", vhost.primary_server_name)
@@ -161,14 +181,7 @@ class CerberusScanner:
                 )
             failure_notifications.extend(self._build_failure_notifications(vhost.primary_server_name, result.failures))
             results.append(result)
-        self.state.replace_current_findings(self._current_findings_snapshot(issue_occurrences), scanned_at=now.isoformat())
-        notifications = self._build_issue_notifications(issue_occurrences) + failure_notifications
-        LOGGER.info("Prepared %s notifications", len(notifications))
-        for notification in self._prepare_notifications_for_delivery(notifications):
-            LOGGER.info("Sending %s notification: %s", notification.category, notification.subject)
-            self.mailer.send(notification)
-        LOGGER.info("Scan cycle completed")
-        return results, notifications
+        return now, results, issue_occurrences, failure_notifications
 
     def _prepare_notifications_for_delivery(self, notifications: List[NotificationEvent]) -> List[NotificationEvent]:
         direct_notifications = [item for item in notifications if item.category == "internal-error"]

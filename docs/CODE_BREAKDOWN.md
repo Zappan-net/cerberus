@@ -693,7 +693,7 @@ It now also stores a materialized current-findings snapshot for external consume
 - `current_findings`
 - `current_scan_state`
 
-That snapshot is refreshed at the end of every `scan_once()` run and exposed through `vhost-cve-monitor export-findings`, which avoids introducing a separate local HTTP service just to let a third-party application consume Cerberus results.
+That snapshot is refreshed at the end of every `scan_once()` run and exposed through `vhost-cve-monitor export-findings`, which avoids introducing a separate local HTTP service just to let a third-party application consume Cerberus results. If the snapshot does not exist yet, `export-findings` runs a collection-only pass to initialize it without sending mail.
 
 ## 7. systemd integration
 

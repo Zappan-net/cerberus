@@ -117,7 +117,7 @@ The repository file is generic and safe to publish. The `/etc` file contains dep
 - Digest mails keep the differential-alerting model, but now render retained findings by severity block and include advisory summaries when available.
 - Recommendations are stack-aware and depend on ecosystem, package manager context, and whether a fixed version is known.
 - `test-mail` can simulate explicit severities, categories, and stack-specific vulnerability samples.
-- `export-findings` dumps the latest materialized findings snapshot as JSON for external consumers.
+- `export-findings` dumps the latest materialized findings snapshot as JSON for external consumers, and initializes that snapshot with a collection-only pass if none exists yet.
 - Supported severities: `CRITICAL`, `HIGH`, `MEDIUM`, `WARNING`, `LOW`, `INFO`, `UNKNOWN`
 - Supported categories: `test`, `vulnerability`, `scan-failure`, `internal-error`, `digest`
 - Example commands:

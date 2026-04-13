@@ -31,9 +31,13 @@ sequenceDiagram
         end
         SC->>DB: deduplicate alerts / track failures
     end
+    SC->>DB: materialize current findings snapshot
     SC->>M: send one digest or individual alerts
     M-->>SC: handoff to local sendmail/Postfix
     SC-->>C: JSON summary
+    C->>SC: optional export-findings
+    SC->>DB: read current findings snapshot
+    SC-->>C: JSON findings export
 ```
 
 ## Functional Diagram
@@ -54,21 +58,24 @@ flowchart TD
     I --> M[Scanner aggregation]
     L --> M
     M --> N[StateStore deduplication]
-    N --> O[NotificationEvent]
-    O --> P[Mailer]
-    P --> Q[sendmail / Postfix / SMTP]
+    M --> O[Current findings snapshot]
+    N --> P[NotificationEvent]
+    O --> V[export-findings JSON]
+    P --> Q[Mailer]
+    Q --> X[sendmail / Postfix / SMTP]
 
     R[systemd timer] --> S[oneshot service]
     S --> M
     T[/etc/vhost-cve-monitor/config.yml] --> M
     U[/var/lib/vhost-cve-monitor/state.db] --> J
     U --> N
+    U --> O
 ```
 
 ## Reading Notes
 
 - The timer is only a trigger. The actual work happens in the oneshot service.
 - The scanner aggregates every issue into internal notification objects before applying mail policy.
-- SQLite stores both advisory cache data and anti-spam state.
+- SQLite stores advisory cache data, anti-spam state, and the materialized current findings snapshot used by `export-findings`.
 - Mail delivery is intentionally delegated to the local MTA instead of implemented directly in Cerberus.
 

@@ -330,7 +330,7 @@ Export the latest materialized findings snapshot as JSON:
 vhost-cve-monitor --config /etc/vhost-cve-monitor/config.yml export-findings
 ```
 
-This snapshot is refreshed automatically at the end of each `scan-once` run, so the regular systemd timer keeps it up to date for third-party consumers without adding a local web service.
+This snapshot is refreshed automatically at the end of each `scan-once` run, so the regular systemd timer keeps it up to date for third-party consumers without adding a local web service. If no snapshot exists yet, `export-findings` performs a collection-only pass to initialize it without sending notifications.
 
 Test mail:
 
