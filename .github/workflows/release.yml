@@ -1,0 +1,51 @@
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            debhelper \
+            dpkg-dev \
+            fakeroot \
+            python3-venv \
+            python3-yaml \
+            python3-setuptools \
+            python3-wheel
+          python -m pip install --upgrade pip build
+
+      - name: Build Python artifacts
+        run: python -m build
+
+      - name: Build Debian package
+        run: dpkg-buildpackage -us -uc
+
+      - name: Publish GitHub release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*
+            ../*.deb
+            ../*.changes
+            ../*.buildinfo
+            ../*.dsc
+            ../*.tar.*
