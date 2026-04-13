@@ -40,13 +40,18 @@ jobs:
       - name: Build Debian package
         run: dpkg-buildpackage -us -uc
 
+      - name: Stage Debian package artifacts
+        run: |
+          mkdir -p artifacts/debian
+          cp ../*.deb artifacts/debian/
+          cp ../*.changes artifacts/debian/
+          cp ../*.buildinfo artifacts/debian/
+          cp ../*.dsc artifacts/debian/
+          cp ../*.tar.* artifacts/debian/
+
       - name: Publish GitHub release assets
         uses: softprops/action-gh-release@v2
         with:
           files: |
             dist/*
-            ../*.deb
-            ../*.changes
-            ../*.buildinfo
-            ../*.dsc
-            ../*.tar.*
+            artifacts/debian/*

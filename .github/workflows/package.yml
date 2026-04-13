@@ -31,13 +31,17 @@ jobs:
       - name: Build Debian package
         run: dpkg-buildpackage -us -uc
 
+      - name: Stage Debian package artifacts
+        run: |
+          mkdir -p artifacts/debian
+          cp ../*.deb artifacts/debian/
+          cp ../*.changes artifacts/debian/
+          cp ../*.buildinfo artifacts/debian/
+          cp ../*.dsc artifacts/debian/
+          cp ../*.tar.* artifacts/debian/
+
       - name: Upload Debian package artifacts
         uses: actions/upload-artifact@v4
         with:
           name: cerberus-debian-package
-          path: |
-            ../*.deb
-            ../*.changes
-            ../*.buildinfo
-            ../*.dsc
-            ../*.tar.*
+          path: artifacts/debian/*
