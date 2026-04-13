@@ -688,6 +688,13 @@ Current consequence:
 - the DB mixes two responsibilities
 - this is acceptable for a small deployment, but later versions might split cache and state into separate files
 
+It now also stores a materialized current-findings snapshot for external consumers:
+
+- `current_findings`
+- `current_scan_state`
+
+That snapshot is refreshed at the end of every `scan_once()` run and exposed through `vhost-cve-monitor export-findings`, which avoids introducing a separate local HTTP service just to let a third-party application consume Cerberus results.
+
 ## 7. systemd integration
 
 Relevant files:

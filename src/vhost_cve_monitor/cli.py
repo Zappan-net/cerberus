@@ -28,6 +28,8 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("scan-once", help="Run one full scan")
     subparsers.add_parser("daemon", help="Run an internal periodic loop")
     subparsers.add_parser("sync-cve", help="Refresh cached advisories for known packages")
+    export_parser = subparsers.add_parser("export-findings", help="Export the latest materialized findings snapshot")
+    export_parser.add_argument("--format", default="json", choices=["json"], help="Export format")
     test_mail_parser = subparsers.add_parser("test-mail", help="Send a test mail")
     test_mail_parser.add_argument(
         "--severity",
@@ -77,6 +79,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         if args.command == "sync-cve":
             refreshed = scanner.refresh_cve_cache()
             print(json.dumps({"refreshed_packages": refreshed}, indent=2))
+            return 0
+        if args.command == "export-findings":
+            print(json.dumps(scanner.export_findings(), indent=2))
             return 0
         if args.command == "test-mail":
             event = scanner.send_custom_test_mail(

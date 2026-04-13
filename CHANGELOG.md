@@ -27,3 +27,4 @@
 - The Debian package now reuses `python3-yaml` through a venv created with `--system-site-packages`, avoiding package-install-time dependency downloads.
 - Missing local mail transport binaries now surface as concise delivery errors instead of triggering recursive internal-error tracebacks.
 - Digest mails now state explicitly that they cover new or changed findings, preserve advisory summaries, and render findings in per-severity blocks with exact breakdown counts.
+- Cerberus now materializes the latest retained findings into SQLite and exposes them through `export-findings`, so external tools can consume current CVE state without a separate local web service.

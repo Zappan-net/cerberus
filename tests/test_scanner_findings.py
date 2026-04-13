@@ -1,4 +1,5 @@
 import os
+import socket
 import sys
 import unittest
 from pathlib import Path
@@ -89,7 +90,7 @@ class ScannerFindingsTestCase(unittest.TestCase):
 
         self.assertEqual(len(notifications), 2)
         self.assertTrue(all(item.metadata["severity"] == "MEDIUM" for item in notifications))
-        self.assertIn("[Cerberus][MEDIUM][domain.tld] 2 alerts", digest.subject)
+        self.assertIn("[Cerberus][MEDIUM][{}] 2 alerts".format(socket.gethostname()), digest.subject)
         self.assertIn("- domain.tld | nodejs / npm | [/home/webserv/zap-and-rok/package-lock.json:17872]", digest.body)
         self.assertIn("- admin.domain.tld | nodejs / npm | [/home/webserv/zap-and-rok/package-lock.json:17872]", digest.body)
         self.assertIn("  [MEDIUM] nth-check 1.0.2 -> fixed in >= 2.0.1 | GHSA-rp65-9cf3-cjxr", digest.body)
@@ -123,7 +124,10 @@ class ScannerFindingsTestCase(unittest.TestCase):
         )
 
         self.assertEqual(len(notifications), 1)
-        self.assertIn("[Cerberus][HIGH][domain.tld] app.example.net symfony/http-foundation CVE-2026-1000", notifications[0].subject)
+        self.assertIn(
+            "[Cerberus][HIGH][{}] app.example.net symfony/http-foundation CVE-2026-1000".format(socket.gethostname()),
+            notifications[0].subject,
+        )
         self.assertIn("Fixed version: >= 5.4.46", notifications[0].body)
         self.assertIn("composer update symfony/http-foundation", notifications[0].body)
         self.assertIn("used at runtime or only during build/test", notifications[0].body)

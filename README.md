@@ -324,6 +324,14 @@ Manual CVE cache refresh:
 vhost-cve-monitor --config /etc/vhost-cve-monitor/config.yml sync-cve
 ```
 
+Export the latest materialized findings snapshot as JSON:
+
+```bash
+vhost-cve-monitor --config /etc/vhost-cve-monitor/config.yml export-findings
+```
+
+This snapshot is refreshed automatically at the end of each `scan-once` run, so the regular systemd timer keeps it up to date for third-party consumers without adding a local web service.
+
 Test mail:
 
 ```bash
@@ -416,6 +424,8 @@ Recommended unit files:
 - [vhost-cve-monitor-cve-sync.timer](packaging/systemd/vhost-cve-monitor-cve-sync.timer)
 
 The first timer performs scans. The second refreshes the local advisory cache for already known package/version tuples.
+
+Because `scan-once` now materializes the latest retained findings into SQLite, the scan timer also keeps `export-findings` current automatically.
 
 ## Notification Examples
 

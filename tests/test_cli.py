@@ -51,6 +51,14 @@ class CliTestCase(unittest.TestCase):
         self.assertEqual(args.fixed_version, ">= 4.17.24")
         self.assertEqual(args.advisory_id, "GHSA-35jh-r3h4-6jhm")
 
+    def test_export_findings_accepts_json_format(self) -> None:
+        parser = build_parser()
+
+        args = parser.parse_args(["export-findings", "--format", "json"])
+
+        self.assertEqual(args.command, "export-findings")
+        self.assertEqual(args.format, "json")
+
 
 if __name__ == "__main__":
     unittest.main()

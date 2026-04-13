@@ -100,8 +100,12 @@ class CerberusScanner:
         LOGGER.info("Starting CVE cache refresh")
         return self.cve_db.refresh_known_packages(allow_network=self.allow_network)
 
+    def export_findings(self) -> Dict:
+        return self.state.export_current_findings()
+
     def scan_once(self) -> Tuple[List[VhostScanResult], List[NotificationEvent]]:
         LOGGER.info("Starting scan cycle")
+        now = datetime.now(timezone.utc)
         vhosts = load_vhosts(self.config)
         LOGGER.info("Loaded %s nginx vhosts", len(vhosts))
         results = []
@@ -157,6 +161,7 @@ class CerberusScanner:
                 )
             failure_notifications.extend(self._build_failure_notifications(vhost.primary_server_name, result.failures))
             results.append(result)
+        self.state.replace_current_findings(self._current_findings_snapshot(issue_occurrences), scanned_at=now.isoformat())
         notifications = self._build_issue_notifications(issue_occurrences) + failure_notifications
         LOGGER.info("Prepared %s notifications", len(notifications))
         for notification in self._prepare_notifications_for_delivery(notifications):
@@ -260,6 +265,31 @@ class CerberusScanner:
             created_at=now,
             metadata={"severity": highest, "events": len(digest_items), "digest_items": digest_items, "hostname": hostname},
         )
+
+    def _current_findings_snapshot(self, occurrences: List[Dict]) -> List[Dict]:
+        snapshot = []
+        for finding in self._normalize_findings(occurrences):
+            severity = normalize_severity(finding.severity)
+            for projection in finding.projections:
+                snapshot.append(
+                    {
+                        "vhost": projection.vhost,
+                        "stack": projection.stack,
+                        "ecosystem": finding.ecosystem,
+                        "dependency": finding.dependency,
+                        "version": finding.version,
+                        "advisory_id": finding.advisory_id,
+                        "severity": severity,
+                        "fixed_version": finding.fixed_version,
+                        "affected_range": finding.affected_range,
+                        "advisory_summary": finding.summary or None,
+                        "source_path": finding.source_path,
+                        "source_line": projection.source_line,
+                        "aliases": list(finding.aliases),
+                        "references": list(finding.references),
+                    }
+                )
+        return snapshot
 
     def _digest_items(self, events: List[NotificationEvent]) -> List[Dict[str, object]]:
         items = {}
@@ -717,6 +747,7 @@ class CerberusScanner:
         }
         resolved_ecosystem = str(ecosystem or stack_to_ecosystem.get(stack.lower(), stack)).strip()
         if category == "vulnerability":
+            advisory_summary = "simulated vulnerability notification from vhost-cve-monitor"
             recommendation = build_recommendation(
                 ecosystem=resolved_ecosystem,
                 stack=stack,
@@ -738,7 +769,7 @@ class CerberusScanner:
                 "Source line: {}".format(source_line),
                 "CVE / Advisory: {}".format(advisory_id),
                 "Severity: {}".format(normalized_severity.lower()),
-                "Summary: simulated vulnerability notification from vhost-cve-monitor",
+                "Summary: {}".format(advisory_summary),
                 "Recommendation: {}".format(recommendation),
             ]
         elif category == "scan-failure":
@@ -815,6 +846,10 @@ class CerberusScanner:
                 "version": installed_version,
                 "fixed_version": fixed_version,
                 "vuln_id": advisory_id,
+                "vhost": vhost if category == "vulnerability" else None,
+                "source_path": source_file if category == "vulnerability" else None,
+                "source_line": source_line if category == "vulnerability" else None,
+                "advisory_summary": advisory_summary if category == "vulnerability" else None,
             },
         )
         self.mailer.send(event)

@@ -5,6 +5,7 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(__file__)), "src"))
 
+from vhost_cve_monitor.notify import Mailer
 from vhost_cve_monitor.scanner import CerberusScanner
 
 
@@ -71,6 +72,24 @@ class ScannerTestMailTestCase(unittest.TestCase):
         self.assertIn("Fixed version: >= 4.17.24", event.body)
         self.assertIn("npm install lodash@", event.body)
         self.assertIn("used at runtime or only during build/test", event.body)
+        self.assertEqual(event.metadata["vhost"], "app.example.net")
+        self.assertEqual(event.metadata["source_path"], "/srv/app/package-lock.json")
+        self.assertEqual(event.metadata["source_line"], 3726)
+        self.assertEqual(
+            event.metadata["advisory_summary"],
+            "simulated vulnerability notification from vhost-cve-monitor",
+        )
+
+        message = Mailer(config=self.config, dry_run=True)._build_message(event)
+        html_part = None
+        for part in message.iter_parts():
+            if part.get_content_type() == "text/html":
+                html_part = part.get_payload(decode=True).decode("utf-8")
+                break
+        self.assertIsNotNone(html_part)
+        self.assertIn("app.example.net", html_part)
+        self.assertIn("GHSA-35jh-r3h4-6jhm", html_part)
+        self.assertIn("/srv/app/package-lock.json:3726", html_part)
 
     def test_send_test_mail_supports_internal_error_category(self) -> None:
         scanner = CerberusScanner(config=self.config, dry_run=True, allow_network=False)

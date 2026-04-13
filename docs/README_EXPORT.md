@@ -117,6 +117,7 @@ The repository file is generic and safe to publish. The `/etc` file contains dep
 - Digest mails keep the differential-alerting model, but now render retained findings by severity block and include advisory summaries when available.
 - Recommendations are stack-aware and depend on ecosystem, package manager context, and whether a fixed version is known.
 - `test-mail` can simulate explicit severities, categories, and stack-specific vulnerability samples.
+- `export-findings` dumps the latest materialized findings snapshot as JSON for external consumers.
 - Supported severities: `CRITICAL`, `HIGH`, `MEDIUM`, `WARNING`, `LOW`, `INFO`, `UNKNOWN`
 - Supported categories: `test`, `vulnerability`, `scan-failure`, `internal-error`, `digest`
 - Example commands:
@@ -127,6 +128,7 @@ The repository file is generic and safe to publish. The `/etc` file contains dep
   - `vhost-cve-monitor --config /etc/vhost-cve-monitor/config.yml test-mail --severity HIGH --category internal-error`
   - `vhost-cve-monitor --config /etc/vhost-cve-monitor/config.yml test-mail --severity MEDIUM --category digest`
   - `vhost-cve-monitor --config /etc/vhost-cve-monitor/config.yml test-mail --category vulnerability --stack nodejs --package lodash --installed-version 4.17.23 --fixed-version ">= 4.17.24" --advisory-id GHSA-35jh-r3h4-6jhm`
+  - `vhost-cve-monitor --config /etc/vhost-cve-monitor/config.yml export-findings`
 - Unhandled Cerberus execution failures generate a direct `internal-error` mail with a GitHub bug-report hint and are not wrapped into digest mode.
 - Live validation note:
   - delivery reached a clean `mail-tester` score after SPF, DKIM, and DMARC were aligned
@@ -146,6 +148,7 @@ If Cerberus is already installed on a machine:
 - if timers were already active, `daemon-reload` is usually enough unless the unit files changed structurally
 - restart the associated `.service` unit, not the `.timer`, when you want to trigger an immediate run
 - reload `opendkim` and `postfix` if mail authentication or local MTA integration changed
+- the scan timer keeps the materialized findings snapshot current automatically, because each `scan-once` run refreshes the SQLite export state consumed by `export-findings`
 
 Default deployments keep using local sendmail/Postfix. If you keep the example config unchanged, ensure `/usr/sbin/sendmail` exists on the host.
 If it does not, Cerberus reports a concise mail-delivery error instead of cascading through an internal Python traceback.
