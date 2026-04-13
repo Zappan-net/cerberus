@@ -25,7 +25,7 @@ The design goal is resilience:
 
 ## 2. Execution model
 
-Cerberus supports three practical execution modes:
+Cerberus supports these practical execution modes and operator commands:
 
 - `scan-once`
   Runs one full scan pass, optionally refreshing missing or stale vulnerability cache entries as it goes.
@@ -35,6 +35,16 @@ Cerberus supports three practical execution modes:
   Runs an internal loop with sleep intervals.
 - `test-mail`
   Sends a synthetic notification to validate severity rendering, headers, categories, recipients, and transport behavior.
+- `validate-config`
+  Validates the loaded YAML configuration and reports obvious structural or semantic problems.
+- `doctor`
+  Runs a local diagnostic pass over paths, mail transport assumptions, optional audit tools, and nginx parsing.
+- `list-vhosts`
+  Lists parsed nginx targets with filter decisions and detected stack context.
+- `explain-vhost <name>`
+  Explains how Cerberus sees one target, including candidate roots and stack matches.
+- `export-findings`
+  Dumps the latest materialized findings snapshot for third-party consumers.
 
 On Debian, the recommended scheduling model is not the internal daemon loop. It is:
 
@@ -604,12 +614,19 @@ Supported options:
 - `--dry-run`
 - `--offline`
 - `--verbose`
+- `scan-once --only-vhost <pattern>`
+- `export-findings --output /path/file.json`
 
 Supported subcommands:
 
 - `scan-once`
 - `daemon`
 - `sync-cve`
+- `validate-config`
+- `doctor`
+- `list-vhosts`
+- `explain-vhost`
+- `export-findings`
 - `test-mail`
 
 Additional `test-mail` options:

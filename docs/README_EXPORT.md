@@ -117,7 +117,13 @@ The repository file is generic and safe to publish. The `/etc` file contains dep
 - Digest mails keep the differential-alerting model, but now render retained findings by severity block and include advisory summaries when available.
 - Recommendations are stack-aware and depend on ecosystem, package manager context, and whether a fixed version is known.
 - `test-mail` can simulate explicit severities, categories, and stack-specific vulnerability samples.
+- `validate-config` checks the loaded YAML structure and highlights obvious semantic conflicts before a scan starts.
+- `doctor` runs a local diagnostic pass over config, key paths, mail transport assumptions, optional audit tools, and nginx parsing.
+- `list-vhosts` shows the parsed nginx targets together with filter decisions and detected stacks.
+- `explain-vhost <name>` explains how Cerberus sees one target, including candidate roots and stack matches.
+- `scan-once --only-vhost ...` restricts a run to one or more selected vhosts for focused troubleshooting.
 - `export-findings` dumps the latest materialized findings snapshot as JSON for external consumers, and initializes that snapshot with a collection-only pass if none exists yet.
+- `export-findings --output /path/file.json` writes that same JSON snapshot directly to a file for automation or a third-party application.
 - Supported severities: `CRITICAL`, `HIGH`, `MEDIUM`, `WARNING`, `LOW`, `INFO`, `UNKNOWN`
 - Supported categories: `test`, `vulnerability`, `scan-failure`, `internal-error`, `digest`
 - Example commands:
@@ -128,7 +134,13 @@ The repository file is generic and safe to publish. The `/etc` file contains dep
   - `vhost-cve-monitor --config /etc/vhost-cve-monitor/config.yml test-mail --severity HIGH --category internal-error`
   - `vhost-cve-monitor --config /etc/vhost-cve-monitor/config.yml test-mail --severity MEDIUM --category digest`
   - `vhost-cve-monitor --config /etc/vhost-cve-monitor/config.yml test-mail --category vulnerability --stack nodejs --package lodash --installed-version 4.17.23 --fixed-version ">= 4.17.24" --advisory-id GHSA-35jh-r3h4-6jhm`
+  - `vhost-cve-monitor --config /etc/vhost-cve-monitor/config.yml validate-config`
+  - `vhost-cve-monitor --config /etc/vhost-cve-monitor/config.yml doctor`
+  - `vhost-cve-monitor --config /etc/vhost-cve-monitor/config.yml list-vhosts`
+  - `vhost-cve-monitor --config /etc/vhost-cve-monitor/config.yml explain-vhost app.example.net`
+  - `vhost-cve-monitor --config /etc/vhost-cve-monitor/config.yml scan-once --only-vhost app.example.net`
   - `vhost-cve-monitor --config /etc/vhost-cve-monitor/config.yml export-findings`
+  - `vhost-cve-monitor --config /etc/vhost-cve-monitor/config.yml export-findings --output /var/lib/cerberus/findings.json`
 - Unhandled Cerberus execution failures generate a direct `internal-error` mail with a GitHub bug-report hint and are not wrapped into digest mode.
 - Live validation note:
   - delivery reached a clean `mail-tester` score after SPF, DKIM, and DMARC were aligned

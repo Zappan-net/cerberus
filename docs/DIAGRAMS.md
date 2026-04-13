@@ -79,3 +79,22 @@ flowchart TD
 - SQLite stores advisory cache data, anti-spam state, and the materialized current findings snapshot used by `export-findings`.
 - Mail delivery is intentionally delegated to the local MTA instead of implemented directly in Cerberus.
 
+## Admin Inspection Flow
+
+```mermaid
+flowchart TD
+    A[validate-config] --> B[load YAML + semantic checks]
+    C[doctor] --> D[path, mail, binary, nginx diagnostics]
+    E[list-vhosts] --> F[parsed vhosts + filters + stacks]
+    G[explain-vhost] --> H[target detail + candidate roots + stack matches]
+    I[scan-once --only-vhost ...] --> J[restricted scan scope]
+    K[export-findings --output ...] --> L[JSON snapshot written to disk]
+```
+
+Additional notes:
+
+- `validate-config` is static validation: it checks the loaded configuration structure and obvious semantic conflicts without scanning vhosts.
+- `doctor` is operational validation: it checks the local environment assumptions Cerberus depends on at runtime.
+- `list-vhosts` and `explain-vhost` expose the nginx parsing, filtering, and stack-detection decisions used by the real scan path.
+- `scan-once --only-vhost ...` narrows collection and notification generation to selected targets for focused troubleshooting.
+- `export-findings --output ...` uses the same materialized findings snapshot as `export-findings`, but writes it directly to disk for automation.

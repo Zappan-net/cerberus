@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
 import socket
 import time
@@ -8,6 +9,7 @@ import traceback
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from fnmatch import fnmatch
+from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from .advisory_logic import (
@@ -19,13 +21,15 @@ from .advisory_logic import (
     strongest_severity,
 )
 from .audits import scan_stack
+from .config import validate_config
 from .cve_db import CVEDatabase
 from .models import AuditIssue, NotificationEvent, ScanFailure, VhostScanResult
 from .nginx_parser import load_vhosts
 from .notify import Mailer
 from .notify import NotificationDeliveryError
-from .stack_detection import detect_stacks
+from .stack_detection import _detect_root_candidates, detect_stacks
 from .state_store import StateStore
+from .subprocess_utils import command_exists
 
 LOGGER = logging.getLogger(__name__)
 BUG_REPORT_URL = "https://github.com/Zappan-net/cerberus/issues"
@@ -61,22 +65,34 @@ class NormalizedFinding:
     projections: List[FindingProjection] = field(default_factory=list)
 
 
-def _is_allowed(name: str, path: Optional[str], config: Dict) -> bool:
+def _filter_reasons(name: str, path: Optional[str], config: Dict) -> List[str]:
     filters = config["filters"]
+    reasons: List[str] = []
     allowlist = filters.get("vhost_allowlist") or []
     blocklist = filters.get("vhost_blocklist") or []
     path_allowlist = filters.get("path_allowlist") or []
     path_blocklist = filters.get("path_blocklist") or []
     if allowlist and not any(fnmatch(name, pattern) for pattern in allowlist):
-        return False
+        reasons.append("vhost not matched by filters.vhost_allowlist")
     if any(fnmatch(name, pattern) for pattern in blocklist):
-        return False
+        reasons.append("vhost matched filters.vhost_blocklist")
     if path:
         if path_allowlist and not any(fnmatch(path, pattern) for pattern in path_allowlist):
-            return False
+            reasons.append("path not matched by filters.path_allowlist")
         if any(fnmatch(path, pattern) for pattern in path_blocklist):
-            return False
-    return True
+            reasons.append("path matched filters.path_blocklist")
+    return reasons
+
+
+def _is_allowed(name: str, path: Optional[str], config: Dict) -> bool:
+    return not _filter_reasons(name, path, config)
+
+
+def _matches_only_vhost(server_names: List[str], only_vhosts: Optional[List[str]]) -> bool:
+    if not only_vhosts:
+        return True
+    names = server_names or []
+    return any(fnmatch(name, pattern) for name in names for pattern in only_vhosts)
 
 
 class CerberusScanner:
@@ -96,6 +112,142 @@ class CerberusScanner:
         self.state = StateStore(config["state"]["database_path"])
         self.mailer = Mailer(config, dry_run=dry_run)
 
+    def validate_loaded_config(self) -> Dict[str, object]:
+        validation = validate_config(self.config)
+        return {
+            "status": "error" if validation["errors"] else "ok",
+            "errors": validation["errors"],
+            "warnings": validation["warnings"],
+        }
+
+    def _serialize_stack_match(self, stack) -> Dict[str, object]:
+        return {
+            "stack_name": stack.stack_name,
+            "confidence": stack.confidence,
+            "root_path": stack.root_path,
+            "reasons": list(stack.reasons),
+        }
+
+    def _describe_vhost(self, vhost) -> Dict[str, object]:
+        filter_reasons = _filter_reasons(vhost.primary_server_name, vhost.primary_root, self.config)
+        candidate_roots = [str(path) for path in _detect_root_candidates(vhost, self.config)]
+        detected_stacks = [self._serialize_stack_match(stack) for stack in detect_stacks(vhost, self.config)]
+        return {
+            "primary_server_name": vhost.primary_server_name,
+            "server_names": list(vhost.server_names),
+            "file_path": vhost.file_path,
+            "primary_root": vhost.primary_root,
+            "roots": list(vhost.roots),
+            "includes": list(vhost.includes),
+            "redirect_only": vhost.is_redirect_only,
+            "passes_filters": not filter_reasons,
+            "filter_reasons": filter_reasons,
+            "candidate_roots": candidate_roots,
+            "proxy_passes": list(vhost.proxy_passes),
+            "fastcgi_passes": list(vhost.fastcgi_passes),
+            "uwsgi_passes": list(vhost.uwsgi_passes),
+            "upstream_paths": list(vhost.upstream_paths),
+            "detected_stacks": detected_stacks,
+        }
+
+    def list_vhosts(self) -> Dict[str, object]:
+        described = [self._describe_vhost(vhost) for vhost in load_vhosts(self.config)]
+        described.sort(key=lambda item: item["primary_server_name"])
+        return {"count": len(described), "vhosts": described}
+
+    def explain_vhost(self, name: str) -> Dict[str, object]:
+        query = str(name or "").strip()
+        if not query:
+            raise ValueError("vhost name must be provided")
+        matches = []
+        for vhost in load_vhosts(self.config):
+            names = list(vhost.server_names) or [vhost.primary_server_name]
+            if query in names or fnmatch(vhost.primary_server_name, query) or any(fnmatch(server_name, query) for server_name in names):
+                matches.append(self._describe_vhost(vhost))
+        if not matches:
+            raise ValueError("vhost not found: {}".format(query))
+        matches.sort(key=lambda item: item["primary_server_name"])
+        return {"query": query, "matches_count": len(matches), "matches": matches}
+
+    def doctor(self) -> Dict[str, object]:
+        validation = validate_config(self.config)
+        errors = list(validation["errors"])
+        warnings = list(validation["warnings"])
+        checks: List[Dict[str, str]] = []
+
+        sites_dir = Path(str(self.config["nginx"].get("sites_enabled_dir") or ""))
+        if sites_dir.is_dir():
+            checks.append({"name": "nginx.sites_enabled_dir", "status": "ok", "detail": str(sites_dir)})
+        else:
+            message = "directory not found: {}".format(sites_dir)
+            checks.append({"name": "nginx.sites_enabled_dir", "status": "error", "detail": message})
+            errors.append(message)
+
+        db_path = Path(str(self.config["state"].get("database_path") or ""))
+        db_parent = db_path.parent
+        if db_parent.exists() and os.access(str(db_parent), os.W_OK):
+            checks.append({"name": "state.database_path", "status": "ok", "detail": str(db_path)})
+        elif db_parent.exists():
+            message = "database parent is not writable: {}".format(db_parent)
+            checks.append({"name": "state.database_path", "status": "error", "detail": message})
+            errors.append(message)
+        else:
+            message = "database parent does not exist yet: {}".format(db_parent)
+            checks.append({"name": "state.database_path", "status": "warning", "detail": message})
+            warnings.append(message)
+
+        log_file = str(self.config["logging"].get("file") or "").strip()
+        if log_file:
+            log_parent = Path(log_file).parent
+            if log_parent.exists() and os.access(str(log_parent), os.W_OK):
+                checks.append({"name": "logging.file", "status": "ok", "detail": log_file})
+            else:
+                message = "log parent is not writable or missing: {}".format(log_parent)
+                checks.append({"name": "logging.file", "status": "warning", "detail": message})
+                warnings.append(message)
+
+        method = str(self.config["notifications"].get("method") or "").lower()
+        if method == "sendmail":
+            sendmail_path = Path(str(self.config["notifications"].get("sendmail_path") or ""))
+            if sendmail_path.exists() and os.access(str(sendmail_path), os.X_OK):
+                checks.append({"name": "notifications.sendmail", "status": "ok", "detail": str(sendmail_path)})
+            else:
+                message = "sendmail binary missing or not executable: {}".format(sendmail_path)
+                checks.append({"name": "notifications.sendmail", "status": "error", "detail": message})
+                errors.append(message)
+        elif method == "smtp":
+            detail = "{}:{} ssl={} starttls={}".format(
+                self.config["notifications"].get("smtp_host"),
+                self.config["notifications"].get("smtp_port"),
+                bool(self.config["notifications"].get("smtp_ssl")),
+                bool(self.config["notifications"].get("smtp_starttls")),
+            )
+            checks.append({"name": "notifications.smtp", "status": "ok", "detail": detail})
+
+        for binary in ("npm", "composer", "pip-audit"):
+            checks.append(
+                {
+                    "name": "binary:{}".format(binary),
+                    "status": "ok" if command_exists(binary) else "warning",
+                    "detail": "available" if command_exists(binary) else "not found in PATH",
+                }
+            )
+            if not command_exists(binary):
+                warnings.append("optional audit tool not found in PATH: {}".format(binary))
+
+        vhosts = load_vhosts(self.config)
+        checks.append({"name": "nginx.vhosts", "status": "ok", "detail": "{} vhost(s) parsed".format(len(vhosts))})
+        if not vhosts:
+            warnings.append("no nginx vhosts were parsed from {}".format(sites_dir))
+
+        status = "error" if errors else "warning" if warnings else "ok"
+        return {
+            "status": status,
+            "errors": errors,
+            "warnings": warnings,
+            "checks": checks,
+        }
+
     def refresh_cve_cache(self) -> int:
         LOGGER.info("Starting CVE cache refresh")
         return self.cve_db.refresh_known_packages(allow_network=self.allow_network)
@@ -112,9 +264,9 @@ class CerberusScanner:
             exported = self.state.export_current_findings()
         return exported
 
-    def scan_once(self) -> Tuple[List[VhostScanResult], List[NotificationEvent]]:
+    def scan_once(self, only_vhosts: Optional[List[str]] = None) -> Tuple[List[VhostScanResult], List[NotificationEvent]]:
         LOGGER.info("Starting scan cycle")
-        now, results, issue_occurrences, failure_notifications = self._collect_scan_data()
+        now, results, issue_occurrences, failure_notifications = self._collect_scan_data(only_vhosts=only_vhosts)
         self.state.replace_current_findings(self._current_findings_snapshot(issue_occurrences), scanned_at=now.isoformat())
         notifications = self._build_issue_notifications(issue_occurrences) + failure_notifications
         LOGGER.info("Prepared %s notifications", len(notifications))
@@ -124,7 +276,7 @@ class CerberusScanner:
         LOGGER.info("Scan cycle completed")
         return results, notifications
 
-    def _collect_scan_data(self) -> Tuple[datetime, List[VhostScanResult], List[Dict], List[NotificationEvent]]:
+    def _collect_scan_data(self, only_vhosts: Optional[List[str]] = None) -> Tuple[datetime, List[VhostScanResult], List[Dict], List[NotificationEvent]]:
         now = datetime.now(timezone.utc)
         vhosts = load_vhosts(self.config)
         LOGGER.info("Loaded %s nginx vhosts", len(vhosts))
@@ -132,6 +284,10 @@ class CerberusScanner:
         issue_occurrences: List[Dict] = []
         failure_notifications: List[NotificationEvent] = []
         for vhost in vhosts:
+            server_names = list(vhost.server_names) or [vhost.primary_server_name]
+            if not _matches_only_vhost(server_names, only_vhosts):
+                LOGGER.info("Skipping non-selected vhost %s", vhost.primary_server_name)
+                continue
             if not _is_allowed(vhost.primary_server_name, vhost.primary_root, self.config):
                 LOGGER.info("Skipping filtered vhost %s", vhost.primary_server_name)
                 continue

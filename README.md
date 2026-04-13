@@ -318,6 +318,37 @@ Offline scan against cached data only:
 vhost-cve-monitor --config /etc/vhost-cve-monitor/config.yml --offline scan-once
 ```
 
+Focused scan for one vhost or pattern:
+
+```bash
+vhost-cve-monitor --config /etc/vhost-cve-monitor/config.yml scan-once --only-vhost app.example.net
+vhost-cve-monitor --config /etc/vhost-cve-monitor/config.yml scan-once --only-vhost "admin.*"
+```
+
+Validate the loaded configuration:
+
+```bash
+vhost-cve-monitor --config /etc/vhost-cve-monitor/config.yml validate-config
+```
+
+Run an environment and runtime diagnostic pass:
+
+```bash
+vhost-cve-monitor --config /etc/vhost-cve-monitor/config.yml doctor
+```
+
+List parsed nginx vhosts with filter and stack context:
+
+```bash
+vhost-cve-monitor --config /etc/vhost-cve-monitor/config.yml list-vhosts
+```
+
+Explain one vhost in detail:
+
+```bash
+vhost-cve-monitor --config /etc/vhost-cve-monitor/config.yml explain-vhost app.example.net
+```
+
 Manual CVE cache refresh:
 
 ```bash
@@ -328,6 +359,12 @@ Export the latest materialized findings snapshot as JSON:
 
 ```bash
 vhost-cve-monitor --config /etc/vhost-cve-monitor/config.yml export-findings
+```
+
+Write that export directly to a file for a third-party consumer:
+
+```bash
+vhost-cve-monitor --config /etc/vhost-cve-monitor/config.yml export-findings --output /var/lib/cerberus/findings.json
 ```
 
 This snapshot is refreshed automatically at the end of each `scan-once` run, so the regular systemd timer keeps it up to date for third-party consumers without adding a local web service. If no snapshot exists yet, `export-findings` performs a collection-only pass to initialize it without sending notifications.
