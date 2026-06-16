@@ -163,7 +163,7 @@ dpkg-buildpackage -us -uc
 Then install the generated package from the parent directory:
 
 ```bash
-sudo dpkg -i ../cerberus_0.1.0-1_all.deb
+sudo dpkg -i ../cerberus_0.1.1_all.deb
 ```
 
 The package installs:
@@ -195,7 +195,7 @@ If you installed Cerberus from the Debian package, rebuild and reinstall the `.d
 ```bash
 cd /opt/cerberus
 dpkg-buildpackage -us -uc
-sudo dpkg -i ../cerberus_0.1.0-1_all.deb
+sudo dpkg -i ../cerberus_0.1.1_all.deb
 ```
 
 If you changed packaged files such as systemd units, reload systemd and ensure the timers are enabled:

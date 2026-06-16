@@ -1,12 +1,13 @@
-cerberus (0.1.0+nmu1) UNRELEASED; urgency=medium
+cerberus (0.1.1) unstable; urgency=medium
 
-  * Non-maintainer upload.
-  * 
+  * Separate npm runtime and development audit findings in digests.
+  * Group duplicate digest findings by evidence while preserving affected targets.
+  * Add semver-major npm fix warnings and scoped recommendations.
 
- -- root <w-julien@pm.me>  Thu, 09 Apr 2026 15:49:12 +0200
+ -- Cerberus Maintainers <maintainers@example.net>  Tue, 16 Jun 2026 09:50:00 +0200
 
 cerberus (0.1.0) unstable; urgency=medium
 
   * Initial Debian package.
 
- -- Julien Wehrbach <w-julien@pm.me>  Wed, 09 Apr 2026 16:00:00 +0200
+ -- Cerberus Maintainers <maintainers@example.net>  Wed, 09 Apr 2026 16:00:00 +0200
