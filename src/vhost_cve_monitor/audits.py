@@ -76,12 +76,27 @@ def _scan_node(stack: StackMatch, cve_db: CVEDatabase, timeout: int, allow_netwo
         LOGGER.info("Running npm audit in %s", root)
         result = run_command(["npm", "audit", "--json", "--omit=dev"], timeout=timeout, cwd=root)
         audit_commands.append("npm audit --json --omit=dev")
+        runtime_issue_keys = set()
         if result.returncode in (0, 1):
             payload = result.json_stdout()
             if isinstance(payload, dict):
-                issues.extend(_parse_npm_audit(payload, dependencies))
+                runtime_issues = _parse_npm_audit(payload, dependencies, audit_scope="runtime")
+                issues.extend(runtime_issues)
+                runtime_issue_keys = {_issue_identity(issue) for issue in runtime_issues}
         else:
             failures.append(ScanFailure(scope="nodejs", reason="npm_audit_failed", detail=result.stderr.strip()))
+
+        LOGGER.info("Running full npm audit in %s", root)
+        full_result = run_command(["npm", "audit", "--json"], timeout=timeout, cwd=root)
+        audit_commands.append("npm audit --json")
+        if full_result.returncode in (0, 1):
+            full_payload = full_result.json_stdout()
+            if isinstance(full_payload, dict):
+                for issue in _parse_npm_audit(full_payload, dependencies, audit_scope="development"):
+                    if _issue_identity(issue) not in runtime_issue_keys:
+                        issues.append(issue)
+        else:
+            failures.append(ScanFailure(scope="nodejs", reason="npm_full_audit_failed", detail=full_result.stderr.strip()))
     else:
         LOGGER.info("Skipping npm audit for %s: npm missing or package-lock.json absent", stack.root_path or "unknown")
         failures.append(ScanFailure(scope="nodejs", reason="npm_audit_unavailable", detail=stack.root_path))
@@ -94,7 +109,7 @@ def _scan_node(stack: StackMatch, cve_db: CVEDatabase, timeout: int, allow_netwo
     )
 
 
-def _parse_npm_audit(payload: Dict, dependencies: List[Dependency]) -> List[AuditIssue]:
+def _parse_npm_audit(payload: Dict, dependencies: List[Dependency], audit_scope: str = "runtime") -> List[AuditIssue]:
     issues = []
     name_to_dependency = {dep.name: dep for dep in dependencies}
     vulnerabilities = payload.get("vulnerabilities") or {}
@@ -103,7 +118,7 @@ def _parse_npm_audit(payload: Dict, dependencies: List[Dependency]) -> List[Audi
         if not dependency:
             continue
         top_level_severity = str(vuln.get("severity", "UNKNOWN")).upper()
-        top_level_fix = _npm_fix_version(vuln.get("fixAvailable"))
+        top_level_fix, fix_is_semver_major = _npm_fix_metadata(vuln.get("fixAvailable"))
         via_entries = vuln.get("via") or []
         for entry in via_entries:
             if not isinstance(entry, dict):
@@ -123,6 +138,8 @@ def _parse_npm_audit(payload: Dict, dependencies: List[Dependency]) -> List[Audi
                         details=str(entry.get("url", "")),
                         fixed_version=top_level_fix or infer_first_safe_from_range(affected_range),
                         affected_range=affected_range,
+                        audit_scope=audit_scope,
+                        fix_is_semver_major=fix_is_semver_major,
                         references=[str(entry.get("url", ""))] if entry.get("url") else [],
                         aliases=[canonical_advisory_id(str(vuln_id), [])],
                     ),
@@ -147,12 +164,22 @@ def _normalize_npm_vuln_id(entry: Dict, package_name: str) -> str:
     return f"NPM-{package_name}"
 
 
-def _npm_fix_version(fix_available) -> str:
+def _npm_fix_metadata(fix_available) -> tuple[str, bool]:
     if isinstance(fix_available, dict):
         version = str(fix_available.get("version") or "").strip()
         if version:
-            return format_fixed_versions([version]) or ""
-    return ""
+            return format_fixed_versions([version]) or "", bool(fix_available.get("isSemVerMajor"))
+        return "", bool(fix_available.get("isSemVerMajor"))
+    return "", False
+
+
+def _issue_identity(issue: AuditIssue) -> tuple:
+    return (
+        issue.dependency.name.lower(),
+        issue.dependency.version,
+        canonical_advisory_id(issue.vulnerability.vuln_id, issue.vulnerability.aliases),
+        issue.dependency.source,
+    )
 
 
 def _scan_composer(stack: StackMatch, cve_db: CVEDatabase, timeout: int, allow_network: bool) -> StackScanResult:
@@ -295,6 +322,8 @@ def _build_runtime_vulnerability(
     details: str,
     fixed_version: str = "",
     affected_range: str = "",
+    audit_scope: str = "runtime",
+    fix_is_semver_major: bool = False,
     references: List[str] = None,
     aliases: List[str] = None,
 ):
@@ -313,6 +342,8 @@ def _build_runtime_vulnerability(
         affected_version=dependency.version,
         fixed_version=fixed_version or None,
         affected_range=affected_range or None,
+        audit_scope=audit_scope,
+        fix_is_semver_major=fix_is_semver_major,
         references=references or [],
         aliases=aliases or [],
     )
@@ -335,6 +366,11 @@ def _dedupe_issues(issues: List[AuditIssue]) -> List[AuditIssue]:
         existing.vulnerability.severity = strongest_severity(
             existing.vulnerability.severity,
             issue.vulnerability.severity,
+        )
+        if issue.vulnerability.audit_scope == "runtime":
+            existing.vulnerability.audit_scope = "runtime"
+        existing.vulnerability.fix_is_semver_major = (
+            existing.vulnerability.fix_is_semver_major or issue.vulnerability.fix_is_semver_major
         )
         if not existing.vulnerability.summary and issue.vulnerability.summary:
             existing.vulnerability.summary = issue.vulnerability.summary

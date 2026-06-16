@@ -60,6 +60,8 @@ class NormalizedFinding:
     details: str
     fixed_version: Optional[str]
     affected_range: Optional[str]
+    audit_scope: str = "runtime"
+    fix_is_semver_major: bool = False
     aliases: List[str] = field(default_factory=list)
     references: List[str] = field(default_factory=list)
     projections: List[FindingProjection] = field(default_factory=list)
@@ -377,62 +379,85 @@ class CerberusScanner:
         now = datetime.now(timezone.utc)
         digest_items = self._digest_items(events)
         highest = self._digest_highest_severity(digest_items)
+        subject_highest = self._digest_subject_severity(digest_items)
         severity_groups = self._group_digest_items_by_severity(digest_items)
         breakdown = self._digest_breakdown(severity_groups)
+        npm_scope_summary = self._npm_scope_summary(digest_items)
         lines = [
             f"Hostname: {hostname}",
             f"Date: {now.isoformat()}",
             f"Findings: {len(digest_items)}",
-            f"Highest severity: {highest}",
+            f"Highest severity: {subject_highest}",
             f"Breakdown: {breakdown}",
             "Summary: new or changed findings were grouped to avoid flooding the destination mailbox.",
         ]
-        for severity, items in severity_groups:
-            lines.extend(
-                [
-                    "",
-                    "{} ({})".format(severity, len(items)),
-                    "Recommendation: {}".format(self._digest_block_recommendation(severity, items)),
-                ]
-            )
-            for item in items:
-                source_suffix = ""
-                if item["source_path"] and item["source_line"]:
-                    source_suffix = " [{}:{}]".format(item["source_path"], item["source_line"])
-                elif item["source_path"]:
-                    source_suffix = " [{}]".format(item["source_path"])
-                fixed_suffix = ""
-                if item["fixed_version"]:
-                    fixed_suffix = " -> fixed in {}".format(item["fixed_version"])
-                lines.append(
-                    "- {} | {}{}{}".format(
-                        item["vhost"],
-                        self._digest_stack_context(item),
-                        " | {}".format(source_suffix.strip()) if source_suffix else "",
+        if highest != subject_highest:
+            lines.append("Full audit highest severity: {}".format(highest))
+        if npm_scope_summary:
+            lines.append(npm_scope_summary)
+        scope_sections = self._digest_scope_sections(digest_items)
+        for section_title, scoped_items in scope_sections:
+            if len(scope_sections) > 1:
+                lines.extend(["", section_title])
+            scoped_groups = self._group_digest_items_by_severity(scoped_items)
+            for severity, items in scoped_groups:
+                lines.extend(
+                    [
                         "",
-                    )
+                        "{} ({})".format(severity, len(items)),
+                        "Recommendation: {}".format(self._digest_block_recommendation(severity, items)),
+                    ]
                 )
-                lines.append(
-                    "  [{}] {} {}{} | {}".format(
-                        severity,
-                        item["dependency"],
-                        item["version"],
-                        fixed_suffix,
-                        item["vuln_id"],
+                for item in items:
+                    source_suffix = ""
+                    if item["source_path"] and item["source_line"]:
+                        source_suffix = " [{}:{}]".format(item["source_path"], item["source_line"])
+                    elif item["source_path"]:
+                        source_suffix = " [{}]".format(item["source_path"])
+                    fixed_suffix = ""
+                    if item["fixed_version"]:
+                        fixed_suffix = " -> fixed in {}".format(item["fixed_version"])
+                    lines.append(
+                        "- Affected targets: {} | {}{}".format(
+                            ", ".join(item["affected_targets"]),
+                            self._digest_stack_context(item),
+                            " | {}".format(source_suffix.strip()) if source_suffix else "",
+                        )
                     )
-                )
-                if item.get("advisory_summary"):
-                    lines.append("  Summary: {}".format(item["advisory_summary"]))
-                if item.get("affected_range"):
-                    lines.append("  Affected range: {}".format(item["affected_range"]))
-        subject = "[Cerberus][{}][{}] {} alerts".format(highest, hostname, len(digest_items))
+                    lines.append(
+                        "  [{}] {} {}{} | {}".format(
+                            severity,
+                            item["dependency"],
+                            item["version"],
+                            fixed_suffix,
+                            item["vuln_id"],
+                        )
+                    )
+                    if item.get("advisory_summary"):
+                        lines.append("  Summary: {}".format(item["advisory_summary"]))
+                    if item.get("affected_range"):
+                        lines.append("  Affected range: {}".format(item["affected_range"]))
+                    if item.get("audit_scope") == "development":
+                        lines.append("  Note: development/build finding absent from npm audit --omit=dev.")
+                    if item.get("fix_is_semver_major"):
+                        lines.append("  Risk: npm marks the available fix as semver-major; review breakage before applying it.")
+        subject_suffix = "{} alerts".format(len(digest_items))
+        if self._has_runtime_npm_and_development_npm(digest_items):
+            subject_suffix = "runtime npm findings"
+        subject = "[Cerberus][{}][{}] {}".format(subject_highest, hostname, subject_suffix)
         return NotificationEvent(
             category="digest",
             fingerprint="digest:{}:{}".format(now.date().isoformat(), len(digest_items)),
             subject=subject,
             body="\n".join(lines),
             created_at=now,
-            metadata={"severity": highest, "events": len(digest_items), "digest_items": digest_items, "hostname": hostname},
+            metadata={
+                "severity": subject_highest,
+                "body_severity": highest,
+                "events": len(digest_items),
+                "digest_items": digest_items,
+                "hostname": hostname,
+            },
         )
 
     def _current_findings_snapshot(self, occurrences: List[Dict]) -> List[Dict]:
@@ -454,6 +479,8 @@ class CerberusScanner:
                         "advisory_summary": finding.summary or None,
                         "source_path": finding.source_path,
                         "source_line": projection.source_line,
+                        "audit_scope": finding.audit_scope,
+                        "fix_is_semver_major": finding.fix_is_semver_major,
                         "aliases": list(finding.aliases),
                         "references": list(finding.references),
                     }
@@ -478,31 +505,36 @@ class CerberusScanner:
                 "stack": _clean_text(metadata.get("stack", "")) or None,
                 "advisory_summary": _clean_text(metadata.get("advisory_summary", "")) or None,
                 "affected_range": _clean_text(metadata.get("affected_range", "")) or None,
+                "audit_scope": _clean_text(metadata.get("audit_scope", "runtime")) or "runtime",
+                "fix_is_semver_major": bool(metadata.get("fix_is_semver_major")),
             }
             key = (
-                item["vhost"],
+                item["source_path"],
                 item["dependency"],
                 item["version"],
                 item["vuln_id"],
-                item["fixed_version"],
-                item["source_path"],
-                item["source_line"],
+                item["audit_scope"],
             )
             if key in items:
                 items[key]["severity"] = strongest_severity(str(items[key]["severity"]), str(item["severity"]))
+                if item["vhost"] not in items[key]["affected_targets"]:
+                    items[key]["affected_targets"].append(item["vhost"])
+                    items[key]["affected_targets"].sort()
                 if not items[key]["fixed_version"] and item["fixed_version"]:
                     items[key]["fixed_version"] = item["fixed_version"]
                 if not items[key]["advisory_summary"] and item["advisory_summary"]:
                     items[key]["advisory_summary"] = item["advisory_summary"]
                 if not items[key]["affected_range"] and item["affected_range"]:
                     items[key]["affected_range"] = item["affected_range"]
+                items[key]["fix_is_semver_major"] = bool(items[key]["fix_is_semver_major"] or item["fix_is_semver_major"])
                 continue
+            item["affected_targets"] = [item["vhost"]]
             items[key] = item
         return sorted(
             items.values(),
             key=lambda item: (
                 -SEVERITY_ORDER.get(str(item["severity"]).upper(), -1),
-                str(item["vhost"]),
+                ", ".join(item["affected_targets"]),
                 str(item["dependency"]),
                 str(item["version"]),
                 str(item["vuln_id"]),
@@ -514,6 +546,57 @@ class CerberusScanner:
         for item in digest_items:
             highest = strongest_severity(highest, str(item.get("severity", "UNKNOWN")).upper())
         return highest
+
+    def _digest_subject_severity(self, digest_items: List[Dict[str, object]]) -> str:
+        if not self._has_runtime_npm_and_development_npm(digest_items):
+            return self._digest_highest_severity(digest_items)
+        runtime_items = [
+            item
+            for item in digest_items
+            if str(item.get("ecosystem") or "").lower() == "npm"
+            and str(item.get("audit_scope") or "runtime") == "runtime"
+        ]
+        if not runtime_items:
+            return self._digest_highest_severity(digest_items)
+        return self._digest_highest_severity(runtime_items)
+
+    def _has_runtime_npm_and_development_npm(self, digest_items: List[Dict[str, object]]) -> bool:
+        npm_scopes = {
+            str(item.get("audit_scope") or "runtime")
+            for item in digest_items
+            if str(item.get("ecosystem") or "").lower() == "npm"
+        }
+        return "runtime" in npm_scopes and "development" in npm_scopes
+
+    def _npm_scope_summary(self, digest_items: List[Dict[str, object]]) -> Optional[str]:
+        development_items = [
+            item
+            for item in digest_items
+            if str(item.get("ecosystem") or "").lower() == "npm"
+            and str(item.get("audit_scope") or "runtime") == "development"
+        ]
+        if not development_items:
+            return None
+        highest = self._digest_highest_severity(development_items)
+        return "Development/build findings include {} advisories.".format(highest)
+
+    def _digest_scope_sections(self, digest_items: List[Dict[str, object]]) -> List[tuple[str, List[Dict[str, object]]]]:
+        runtime = [
+            item
+            for item in digest_items
+            if str(item.get("audit_scope") or "runtime") != "development"
+        ]
+        development = [
+            item
+            for item in digest_items
+            if str(item.get("audit_scope") or "runtime") == "development"
+        ]
+        sections = []
+        if runtime:
+            sections.append(("Runtime / production findings", runtime))
+        if development:
+            sections.append(("Development / build findings", development))
+        return sections
 
     def _group_digest_items_by_severity(self, digest_items: List[Dict[str, object]]) -> List[tuple[str, List[Dict[str, object]]]]:
         grouped = {}
@@ -528,7 +611,7 @@ class CerberusScanner:
                     sorted(
                         items,
                         key=lambda item: (
-                            str(item["vhost"]),
+                            ", ".join(item.get("affected_targets", [str(item.get("vhost", ""))])),
                             str(item["dependency"]),
                             str(item["version"]),
                             str(item["vuln_id"]),
@@ -561,6 +644,12 @@ class CerberusScanner:
         if len(ecosystems) == 1:
             ecosystem = next(iter(ecosystems))
             if ecosystem == "npm":
+                scopes = {str(item.get("audit_scope") or "runtime") for item in items}
+                if scopes == {"development"}:
+                    return (
+                        "schedule these npm development/build dependency updates, review `package-lock.json` drift, "
+                        "and avoid `npm audit fix --force` unless semver-major breakage has been reviewed."
+                    )
                 if severity in ("CRITICAL", "HIGH"):
                     return (
                         "prioritize these npm dependency upgrades first, apply the fixed versions shown below, "
@@ -644,6 +733,8 @@ class CerberusScanner:
                     details=issue.vulnerability.details,
                     fixed_version=issue.vulnerability.fixed_version,
                     affected_range=issue.vulnerability.affected_range,
+                    audit_scope=issue.vulnerability.audit_scope,
+                    fix_is_semver_major=issue.vulnerability.fix_is_semver_major,
                     aliases=list(issue.vulnerability.aliases),
                     references=list(issue.vulnerability.references),
                     projections=[
@@ -663,6 +754,9 @@ class CerberusScanner:
                 current.details = issue.vulnerability.details
             current.fixed_version = merge_fixed_versions(current.fixed_version, issue.vulnerability.fixed_version)
             current.affected_range = current.affected_range or issue.vulnerability.affected_range
+            if issue.vulnerability.audit_scope == "runtime":
+                current.audit_scope = "runtime"
+            current.fix_is_semver_major = current.fix_is_semver_major or issue.vulnerability.fix_is_semver_major
             for alias in issue.vulnerability.aliases:
                 if alias and alias not in current.aliases:
                     current.aliases.append(alias)
@@ -702,6 +796,8 @@ class CerberusScanner:
                 installed_version=finding.version,
                 fixed_version=finding.fixed_version,
                 affected_range=finding.affected_range,
+                audit_scope=finding.audit_scope,
+                fix_is_semver_major=finding.fix_is_semver_major,
             )
             for projection in finding.projections:
                 severity = normalize_severity(finding.severity)
@@ -718,6 +814,8 @@ class CerberusScanner:
                     "source_path": finding.source_path,
                     "source_line": projection.source_line,
                     "ecosystem": finding.ecosystem,
+                    "audit_scope": finding.audit_scope,
+                    "fix_is_semver_major": finding.fix_is_semver_major,
                 }
                 fingerprint = "issue:{}:{}:{}:{}:{}:{}".format(
                     projection.vhost,
@@ -751,9 +849,14 @@ class CerberusScanner:
                     "Source line: {}".format(projection.source_line if projection.source_line else "unknown"),
                     f"CVE / Advisory: {finding.advisory_id}",
                     f"Severity: {severity}",
+                    "Audit scope: {}".format(finding.audit_scope),
                     "Summary: {}".format(finding.summary or "No summary provided by upstream advisory sources."),
                     "Recommendation: {}".format(recommendation),
                 ]
+                if finding.audit_scope == "development":
+                    body_lines.append("Note: development/build finding absent from npm audit --omit=dev.")
+                if finding.fix_is_semver_major:
+                    body_lines.append("Risk: npm marks the available fix as semver-major; review breakage before applying it.")
                 if affected_line:
                     body_lines.insert(7, affected_line)
                 notifications.append(

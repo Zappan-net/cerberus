@@ -74,6 +74,8 @@ class Vulnerability:
     affected_version: str
     fixed_version: Optional[str] = None
     affected_range: Optional[str] = None
+    audit_scope: str = "runtime"
+    fix_is_semver_major: bool = False
     references: List[str] = field(default_factory=list)
     aliases: List[str] = field(default_factory=list)
 

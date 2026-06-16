@@ -191,29 +191,50 @@ def build_recommendation(
     installed_version: str,
     fixed_version: Optional[str],
     affected_range: Optional[str] = None,
+    audit_scope: str = "runtime",
+    fix_is_semver_major: bool = False,
 ) -> str:
     safe_target = fixed_version or infer_first_safe_from_range(affected_range)
     ecosystem_name = str(ecosystem or "").lower()
+    scope_name = str(audit_scope or "runtime").lower()
     usage_warning = (
         " Verify whether `{}` is used at runtime or only during build/test before applying a broad upgrade."
     ).format(package_name)
+    semver_warning = (
+        " npm marks the available fix as semver-major; do not use `npm audit fix --force` without reviewing "
+        "breaking changes."
+        if fix_is_semver_major
+        else ""
+    )
     if ecosystem_name == "npm":
+        if scope_name == "development":
+            if safe_target:
+                return (
+                    "Treat `{}` as dependency maintenance because it is absent from `npm audit --omit=dev`. "
+                    "Schedule the upgrade to {}, refresh `package-lock.json`, and validate the build/test "
+                    "toolchain before deployment.{}{}"
+                ).format(package_name, safe_target, usage_warning, semver_warning)
+            return (
+                "Treat `{}` as dependency maintenance because it is absent from `npm audit --omit=dev`. "
+                "No fixed version is known; review the development dependency tree and monitor upstream advisories.{}{}"
+            ).format(package_name, usage_warning, semver_warning)
         if safe_target:
             return (
                 "Upgrade `{}` from {} to {} with `npm install {package}@\"{target}\"`, refresh "
-                "`package-lock.json`, and use `npm audit fix` only after reviewing the resulting dependency drift.{}"
+                "`package-lock.json`, and use `npm audit fix` only after reviewing the resulting dependency drift.{}{}"
             ).format(
                 package_name,
                 installed_version,
                 safe_target,
                 usage_warning,
+                semver_warning,
                 package=package_name,
                 target=safe_target,
             )
         return (
             "No fixed version is known. Review the dependency tree for `{}`, apply any available "
-            "upstream workaround, and monitor `npm audit` for a patched release.{}"
-        ).format(package_name, usage_warning)
+            "upstream workaround, and monitor `npm audit` for a patched release.{}{}"
+        ).format(package_name, usage_warning, semver_warning)
     if ecosystem_name == "pypi":
         if safe_target:
             return (

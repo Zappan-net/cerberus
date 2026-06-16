@@ -46,7 +46,7 @@ The project is split into explicit layers:
    Collects dependency versions from common manifests and environments:
    `composer.lock`, `composer.json`, `package-lock.json`, `npm-shrinkwrap.json`, `package.json`, `requirements.txt`, `poetry.lock`, `.venv/bin/python`, `venv/bin/python`, `gitea --version`, and `VERSION`.
 4. `audits.py`
-   Runs `npm audit`, `composer audit`, and `pip-audit` when available, under a timeout. If a tool is missing or the project is incomplete, Cerberus keeps going and falls back to the local advisory cache.
+   Runs native audit tools when available, under a timeout. For npm projects, Cerberus runs both `npm audit --omit=dev` and full `npm audit` so production/runtime findings stay distinct from development/build findings. Composer and Python projects use `composer audit` and `pip-audit`. If a tool is missing or the project is incomplete, Cerberus keeps going and falls back to the local advisory cache.
 5. `cve_db.py`
    Maintains a local SQLite advisory cache. The chosen strategy is pragmatic: Cerberus does not mirror all CVEs, it normalizes and caches OSV responses only for the package/version pairs it actually sees. This keeps the local database small and useful on a simple Debian host. Between refreshes, scans can run in offline mode against the cache.
 6. `state_store.py`
@@ -258,6 +258,7 @@ Main keys:
 - `notifications.max_emails_per_run`: hard cap per scan cycle, with overflow grouped into one digest mail.
 - `notifications.summary_only`: when enabled, one scan generates one single summary mail containing every alert from that run.
 - digest mails keep the differential-alerting model, group retained findings by severity, and render advisory summaries when upstream data provides them.
+- npm digest mails distinguish production/runtime findings from development/build findings. Runtime findings drive the primary digest severity when both scopes are present, while full-audit-only findings remain visible in a separate development/build section.
 - `filters.*`: allowlist/blocklist for vhosts and paths.
 
 Authenticated SMTP examples:
@@ -492,8 +493,9 @@ Mail presentation:
 - HTML version with color-coded severity banner
 - plain text fallback for minimal mail clients
 - severity-aware headers such as `X-Cerberus-Severity`, `X-Priority`, `Priority`, and `Importance`
-- digest items keep per-vhost visibility even when the same vulnerable project is exposed through multiple hostnames
+- digest items group identical findings that share the same evidence file, package, installed version, advisory, and audit scope, while keeping infra visibility through an `Affected targets` list
 - recommendations are stack-aware and mention fixed versions when the advisory data allows it
+- npm recommendations distinguish immediate runtime remediation from scheduled development/build dependency maintenance, and semver-major `fixAvailable` suggestions are flagged as risky instead of recommending blind `npm audit fix --force`
 
 ## Severity-grouped HTML email example
 

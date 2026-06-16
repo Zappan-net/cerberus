@@ -259,6 +259,9 @@ class NotifyTestCase(unittest.TestCase):
                         "advisory_summary": "Exposure of webpack-dev-server dev middleware",
                         "source_path": "/tmp/package-lock.json",
                         "source_line": 3286,
+                        "audit_scope": "development",
+                        "fix_is_semver_major": True,
+                        "affected_targets": ["admin.domain.tld", "domain.tld"],
                     },
                     {
                         "vhost": "domain.tld",
@@ -272,6 +275,8 @@ class NotifyTestCase(unittest.TestCase):
                         "advisory_summary": "Line return parsing error in PostCSS",
                         "source_path": "/tmp/package-lock.json",
                         "source_line": 2247,
+                        "audit_scope": "runtime",
+                        "affected_targets": ["domain.tld"],
                     },
                 ],
             },
@@ -286,6 +291,10 @@ class NotifyTestCase(unittest.TestCase):
         self.assertIn("MEDIUM (1)", html)
         self.assertIn("<strong>GHSA-9jgg-88mc-972h</strong>", html)
         self.assertIn("Exposure of webpack-dev-server dev middleware", html)
+        self.assertIn("Development / build findings", html)
+        self.assertIn("Affected targets", html)
+        self.assertIn("admin.domain.tld, domain.tld", html)
+        self.assertIn("semver-major", html)
 
 
 if __name__ == "__main__":

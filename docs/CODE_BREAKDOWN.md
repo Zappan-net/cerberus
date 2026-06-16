@@ -476,12 +476,14 @@ For every supported stack:
 #### Node.js
 
 - collects dependencies from npm files
-- runs `npm audit --json --omit=dev` if `npm` and `package-lock.json` are present
-- parses `vulnerabilities` from the audit JSON
+- runs `npm audit --json --omit=dev` if `npm` and `package-lock.json` are present, marking those findings as production/runtime scope
+- also runs full `npm audit --json`, keeping findings absent from `--omit=dev` as development/build scope
+- parses `vulnerabilities` from both audit JSON payloads
 - prefers standard identifiers such as `GHSA-...` or `CVE-...` when npm exposes them
 - falls back to explicit `NPM-ADVISORY-...` identifiers instead of leaving raw numeric internal IDs in alerts
 - keeps the strongest known severity when npm and OSV disagree or when one source only reports `UNKNOWN`
 - carries `fixAvailable` data forward so the rendered alert can mention the first known safe version
+- preserves `fixAvailable.isSemVerMajor` so mail recommendations can warn before any forced semver-major remediation
 
 #### Composer
 
@@ -600,6 +602,8 @@ Additional test-mail behavior:
   - `UNKNOWN`
 - digest test messages include synthetic grouped alert lines
 - real digest mails are rendered from the final retained finding set, then split into explicit severity blocks with per-block recommendations
+- npm digest mails split production/runtime findings from full-audit-only development/build findings; runtime findings drive the primary digest subject severity when both scopes are present
+- digest rendering groups identical findings by evidence path, package, installed version, advisory, and audit scope, while listing every affected target that exposes the same evidence file
 - vulnerability test messages can exercise stack-aware remediation text without waiting for a real scan finding
 - internal-error test messages exercise the dedicated daemon failure path and the GitHub bug-report hint
 - compact subjects mirror the real mail path and no longer include redundant markers such as both `ALERT` and `in this scan`

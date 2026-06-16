@@ -90,7 +90,7 @@ class StackDetectionTestCase(unittest.TestCase):
 
     def test_build_root_also_scans_parent_manifest_root(self) -> None:
         with TemporaryDirectory() as tmp:
-            app_root = Path(tmp) / "zap-and-rok"
+            app_root = Path(tmp) / "example-app"
             build_root = app_root / "build"
             build_root.mkdir(parents=True)
             (app_root / "package.json").write_text("{}", encoding="utf-8")

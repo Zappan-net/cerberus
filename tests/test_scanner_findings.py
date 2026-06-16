@@ -47,7 +47,7 @@ class ScannerFindingsTestCase(unittest.TestCase):
             ecosystem="npm",
             name="nth-check",
             version="1.0.2",
-            source="/home/webserv/zap-and-rok/package-lock.json",
+            source="/home/webserv/example-app/package-lock.json",
             source_line=17872,
         )
         medium_vuln = Vulnerability(
@@ -90,9 +90,11 @@ class ScannerFindingsTestCase(unittest.TestCase):
 
         self.assertEqual(len(notifications), 2)
         self.assertTrue(all(item.metadata["severity"] == "MEDIUM" for item in notifications))
-        self.assertIn("[Cerberus][MEDIUM][{}] 2 alerts".format(socket.gethostname()), digest.subject)
-        self.assertIn("- domain.tld | nodejs / npm | [/home/webserv/zap-and-rok/package-lock.json:17872]", digest.body)
-        self.assertIn("- admin.domain.tld | nodejs / npm | [/home/webserv/zap-and-rok/package-lock.json:17872]", digest.body)
+        self.assertIn("[Cerberus][MEDIUM][{}] 1 alerts".format(socket.gethostname()), digest.subject)
+        self.assertIn(
+            "- Affected targets: admin.domain.tld, domain.tld | nodejs / npm | [/home/webserv/example-app/package-lock.json:17872]",
+            digest.body,
+        )
         self.assertIn("  [MEDIUM] nth-check 1.0.2 -> fixed in >= 2.0.1 | GHSA-rp65-9cf3-cjxr", digest.body)
 
     def test_single_alert_subject_is_compact_and_includes_fixed_version_and_recommendation(self) -> None:
@@ -141,7 +143,7 @@ class ScannerFindingsTestCase(unittest.TestCase):
             ("postcss", "7.0.39", "GHSA-7fh5-64p2-3v2j", "Line return parsing error in PostCSS", ">= 8.4.31", 2247),
             ("webpack-dev-server", "4.15.2", "GHSA-9jgg-88mc-972h", "Exposure of webpack-dev-server dev middleware", ">= 5.2.1", 3286),
         ]:
-            dependency = Dependency("npm", dependency_name, version, "/home/webserv/zap-and-rok/package-lock.json", line)
+            dependency = Dependency("npm", dependency_name, version, "/home/webserv/example-app/package-lock.json", line)
             vuln = Vulnerability(
                 vuln_id=vuln_id,
                 source="runtime-audit",

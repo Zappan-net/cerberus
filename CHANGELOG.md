@@ -15,6 +15,9 @@
 ### Changed
 
 - Digest subjects are shorter and operationally focused, for example `[Cerberus][MEDIUM][domain.tld] 2 alerts`.
+- npm scanning now runs both production/runtime audit scope and full audit scope, keeping development/build-only findings visible without inflating the primary runtime digest severity.
+- Digest rendering now groups identical findings by evidence path, package, installed version, advisory, and audit scope, while listing all affected targets in one block.
+- npm recommendations now distinguish runtime remediation from development/build dependency maintenance and warn when `fixAvailable` requires a semver-major change.
 - `UNKNOWN` no longer overrides a known severity during finding enrichment.
 - OSV severity extraction now checks top-level `database_specific.severity` before matched `affected[*]` metadata and logs the candidate fields chosen during debug runs.
 - When OSV only exposes CVSS scores or CVSS v3.x vectors, Cerberus now derives a canonical severity instead of falling back to `UNKNOWN`.

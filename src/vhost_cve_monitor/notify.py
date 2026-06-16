@@ -121,6 +121,7 @@ def _html_vulnerability_body(event: NotificationEvent, severity: str, color: str
     fixed_version = escape(str(metadata.get("fixed_version") or "unknown"))
     source_path = escape(str(metadata.get("source_path") or "unknown"))
     source_line = escape(str(metadata.get("source_line") or "unknown"))
+    audit_scope = escape(str(metadata.get("audit_scope") or "runtime"))
     content = [
         "<div style=\"border:1px solid #e5e7eb;border-radius:12px;padding:16px 18px;background:#ffffff;\">",
         _html_value_row("Target", escape(str(metadata.get("vhost") or "unknown"))),
@@ -133,11 +134,16 @@ def _html_vulnerability_body(event: NotificationEvent, severity: str, color: str
         _html_value_row("Installed version", escape(str(metadata.get("version") or "unknown"))),
         _html_value_row("Fixed version", fixed_version),
         _html_value_row("Severity", escape(severity)),
+        _html_value_row("Audit scope", audit_scope),
         _html_value_row("Advisory", "<strong>{}</strong>".format(advisory_id)),
         _html_value_row("Summary", summary),
         _html_value_row("Evidence", "{}:{}".format(source_path, source_line)),
-        "</div>",
     ]
+    if audit_scope == "development":
+        content.append(_html_value_row("Note", "development/build finding absent from npm audit --omit=dev."))
+    if metadata.get("fix_is_semver_major"):
+        content.append(_html_value_row("Risk", "npm marks the available fix as semver-major; review breakage before applying it."))
+    content.append("</div>")
     return _html_shell(event.subject, event.category.upper(), severity, color, "\n".join(content))
 
 
@@ -145,12 +151,12 @@ def _html_digest_body(event: NotificationEvent, severity: str, color: str) -> st
     metadata = event.metadata
     digest_items: List[Dict[str, object]] = list(metadata.get("digest_items") or [])
     hostname = str(metadata.get("hostname") or "unknown")
-    grouped: Dict[str, List[Dict[str, object]]] = {}
-    for item in digest_items:
-        grouped.setdefault(str(item.get("severity", "UNKNOWN")).upper(), []).append(item)
     severity_rank = {"CRITICAL": 5, "HIGH": 4, "MEDIUM": 3, "WARNING": 2, "LOW": 1, "INFO": 0, "UNKNOWN": -1}
-    ordered_severities = sorted(grouped.keys(), key=lambda key: -severity_rank.get(key, -1))
-    breakdown = ", ".join("{} {}".format(len(grouped[level]), level) for level in ordered_severities) or "0 UNKNOWN"
+    grouped_all: Dict[str, List[Dict[str, object]]] = {}
+    for item in digest_items:
+        grouped_all.setdefault(str(item.get("severity", "UNKNOWN")).upper(), []).append(item)
+    ordered_all = sorted(grouped_all.keys(), key=lambda key: -severity_rank.get(key, -1))
+    breakdown = ", ".join("{} {}".format(len(grouped_all[level]), level) for level in ordered_all) or "0 UNKNOWN"
     blocks = [
         "<div style=\"border:1px solid #e5e7eb;border-radius:12px;padding:16px 18px;background:#ffffff;margin-bottom:16px;\">",
         _html_value_row("Hostname", escape(hostname)),
@@ -159,50 +165,102 @@ def _html_digest_body(event: NotificationEvent, severity: str, color: str) -> st
         _html_value_row("Highest severity", escape(severity)),
         _html_value_row("Breakdown", escape(breakdown)),
         _html_value_row("Summary", "new or changed findings were grouped to avoid flooding the destination mailbox."),
-        "</div>",
     ]
-    for level in ordered_severities:
-        level_color = SEVERITY_COLORS.get(level, "#475569")
-        items = grouped[level]
-        blocks.append(
-            "<div style=\"border:1px solid #e5e7eb;border-radius:12px;overflow:hidden;background:#ffffff;margin-bottom:16px;\">"
-            "<div style=\"background:{color};color:#ffffff;padding:12px 16px;font-weight:700;\">{level} ({count})</div>"
-            "<div style=\"padding:16px;\">".format(color=level_color, level=escape(level), count=len(items))
-        )
-        recommendation = _html_digest_block_recommendation(level, items)
-        if recommendation:
+    body_severity = str(metadata.get("body_severity") or severity)
+    if body_severity != severity:
+        blocks.append(_html_value_row("Full audit highest severity", escape(body_severity)))
+    npm_scope_summary = _html_npm_scope_summary(digest_items)
+    if npm_scope_summary:
+        blocks.append(_html_value_row("Audit scope", escape(npm_scope_summary)))
+    blocks.append("</div>")
+    scope_sections = _html_digest_scope_sections(digest_items)
+    for section_title, section_items in scope_sections:
+        if len(scope_sections) > 1:
             blocks.append(
-                "<div style=\"margin-bottom:12px;color:#1f2937;\"><strong>Recommendation:</strong> {}</div>".format(
-                    escape(recommendation)
+                "<div style=\"font-size:16px;font-weight:700;color:#0f172a;margin:18px 0 10px 0;\">{}</div>".format(
+                    escape(section_title)
                 )
             )
-        for item in items:
-            stack_context = " / ".join(
-                part
-                for part in [str(item.get("stack") or "").strip(), str(item.get("ecosystem") or "").strip()]
-                if part
-            ) or "unknown"
-            fixed = str(item.get("fixed_version") or "unknown")
-            evidence = escape(str(item.get("source_path") or "unknown"))
-            if item.get("source_line"):
-                evidence = "{}:{}".format(evidence, escape(str(item.get("source_line"))))
-            blocks.extend(
-                [
-                    "<div style=\"border:1px solid #e5e7eb;border-radius:10px;padding:12px 14px;margin-bottom:12px;\">",
-                    _html_value_row("Target", escape(str(item.get("vhost") or "unknown"))),
-                    _html_value_row("Stack / Ecosystem", escape(stack_context)),
-                    _html_value_row("Package", escape(str(item.get("dependency") or "unknown"))),
-                    _html_value_row("Installed version", escape(str(item.get("version") or "unknown"))),
-                    _html_value_row("Fixed version", escape(fixed)),
-                    _html_value_row("Severity", escape(level)),
-                    _html_value_row("Advisory", "<strong>{}</strong>".format(escape(str(item.get("vuln_id") or "unknown")))),
-                    _html_value_row("Summary", escape(str(item.get("advisory_summary") or "No summary provided by upstream advisory sources."))),
-                    _html_value_row("Evidence", evidence),
-                    "</div>",
-                ]
+        grouped: Dict[str, List[Dict[str, object]]] = {}
+        for item in section_items:
+            grouped.setdefault(str(item.get("severity", "UNKNOWN")).upper(), []).append(item)
+        for level in sorted(grouped.keys(), key=lambda key: -severity_rank.get(key, -1)):
+            level_color = SEVERITY_COLORS.get(level, "#475569")
+            items = grouped[level]
+            blocks.append(
+                "<div style=\"border:1px solid #e5e7eb;border-radius:12px;overflow:hidden;background:#ffffff;margin-bottom:16px;\">"
+                "<div style=\"background:{color};color:#ffffff;padding:12px 16px;font-weight:700;\">{level} ({count})</div>"
+                "<div style=\"padding:16px;\">".format(color=level_color, level=escape(level), count=len(items))
             )
-        blocks.append("</div></div>")
+            recommendation = _html_digest_block_recommendation(level, items)
+            if recommendation:
+                blocks.append(
+                    "<div style=\"margin-bottom:12px;color:#1f2937;\"><strong>Recommendation:</strong> {}</div>".format(
+                        escape(recommendation)
+                    )
+                )
+            for item in items:
+                stack_context = " / ".join(
+                    part
+                    for part in [str(item.get("stack") or "").strip(), str(item.get("ecosystem") or "").strip()]
+                    if part
+                ) or "unknown"
+                fixed = str(item.get("fixed_version") or "unknown")
+                evidence = escape(str(item.get("source_path") or "unknown"))
+                if item.get("source_line"):
+                    evidence = "{}:{}".format(evidence, escape(str(item.get("source_line"))))
+                targets = item.get("affected_targets") or [item.get("vhost") or "unknown"]
+                blocks.extend(
+                    [
+                        "<div style=\"border:1px solid #e5e7eb;border-radius:10px;padding:12px 14px;margin-bottom:12px;\">",
+                        _html_value_row("Affected targets", escape(", ".join(str(target) for target in targets))),
+                        _html_value_row("Stack / Ecosystem", escape(stack_context)),
+                        _html_value_row("Package", escape(str(item.get("dependency") or "unknown"))),
+                        _html_value_row("Installed version", escape(str(item.get("version") or "unknown"))),
+                        _html_value_row("Fixed version", escape(fixed)),
+                        _html_value_row("Severity", escape(level)),
+                        _html_value_row("Audit scope", escape(str(item.get("audit_scope") or "runtime"))),
+                        _html_value_row("Advisory", "<strong>{}</strong>".format(escape(str(item.get("vuln_id") or "unknown")))),
+                        _html_value_row("Summary", escape(str(item.get("advisory_summary") or "No summary provided by upstream advisory sources."))),
+                        _html_value_row("Evidence", evidence),
+                    ]
+                )
+                if item.get("audit_scope") == "development":
+                    blocks.append(_html_value_row("Note", "development/build finding absent from npm audit --omit=dev."))
+                if item.get("fix_is_semver_major"):
+                    blocks.append(_html_value_row("Risk", "npm marks the available fix as semver-major; review breakage before applying it."))
+                blocks.append("</div>")
+            blocks.append("</div></div>")
     return _html_shell(event.subject, event.category.upper(), severity, color, "\n".join(blocks))
+
+
+def _html_digest_scope_sections(digest_items: List[Dict[str, object]]) -> List[tuple[str, List[Dict[str, object]]]]:
+    runtime = [item for item in digest_items if str(item.get("audit_scope") or "runtime") != "development"]
+    development = [item for item in digest_items if str(item.get("audit_scope") or "runtime") == "development"]
+    sections = []
+    if runtime:
+        sections.append(("Runtime / production findings", runtime))
+    if development:
+        sections.append(("Development / build findings", development))
+    return sections
+
+
+def _html_npm_scope_summary(digest_items: List[Dict[str, object]]) -> str:
+    development_items = [
+        item
+        for item in digest_items
+        if str(item.get("ecosystem") or "").lower() == "npm"
+        and str(item.get("audit_scope") or "runtime") == "development"
+    ]
+    if not development_items:
+        return ""
+    severity_rank = {"CRITICAL": 5, "HIGH": 4, "MEDIUM": 3, "WARNING": 2, "LOW": 1, "INFO": 0, "UNKNOWN": -1}
+    highest = "UNKNOWN"
+    for item in development_items:
+        severity = str(item.get("severity") or "UNKNOWN").upper()
+        if severity_rank.get(severity, -1) > severity_rank.get(highest, -1):
+            highest = severity
+    return "Development/build findings include {} advisories.".format(highest)
 
 
 def _html_digest_block_recommendation(severity: str, items: List[Dict[str, object]]) -> str:
@@ -214,6 +272,12 @@ def _html_digest_block_recommendation(severity: str, items: List[Dict[str, objec
     if len(ecosystems) == 1:
         ecosystem = next(iter(ecosystems))
         if ecosystem == "npm":
+            scopes = {str(item.get("audit_scope") or "runtime") for item in items}
+            if scopes == {"development"}:
+                return (
+                    "schedule these npm development/build dependency updates, review package-lock drift, and avoid "
+                    "npm audit fix --force unless semver-major breakage has been reviewed."
+                )
             if severity in ("CRITICAL", "HIGH"):
                 return (
                     "prioritize these npm dependency upgrades first, apply the fixed versions shown below, review "

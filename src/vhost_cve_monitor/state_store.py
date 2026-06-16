@@ -49,6 +49,8 @@ class StateStore:
                     advisory_summary TEXT,
                     source_path TEXT NOT NULL,
                     source_line INTEGER,
+                    audit_scope TEXT NOT NULL DEFAULT 'runtime',
+                    fix_is_semver_major INTEGER NOT NULL DEFAULT 0,
                     aliases_json TEXT NOT NULL,
                     references_json TEXT NOT NULL,
                     scanned_at TEXT NOT NULL,
@@ -61,6 +63,17 @@ class StateStore:
                 );
                 """
             )
+            self._ensure_column(connection, "current_findings", "audit_scope", "TEXT NOT NULL DEFAULT 'runtime'")
+            self._ensure_column(connection, "current_findings", "fix_is_semver_major", "INTEGER NOT NULL DEFAULT 0")
+
+    @staticmethod
+    def _ensure_column(connection: sqlite3.Connection, table: str, column: str, column_type: str) -> None:
+        columns = {
+            row["name"]
+            for row in connection.execute("PRAGMA table_info({})".format(table)).fetchall()
+        }
+        if column not in columns:
+            connection.execute("ALTER TABLE {} ADD COLUMN {} {}".format(table, column, column_type))
 
     @staticmethod
     def stable_hash(payload: Dict) -> str:
@@ -147,6 +160,8 @@ class StateStore:
                     finding.get("advisory_summary"),
                     str(finding.get("source_path") or "unknown"),
                     finding.get("source_line"),
+                    str(finding.get("audit_scope") or "runtime"),
+                    1 if finding.get("fix_is_semver_major") else 0,
                     json.dumps(list(finding.get("aliases") or []), sort_keys=True),
                     json.dumps(list(finding.get("references") or []), sort_keys=True),
                     scanned_at,
@@ -160,8 +175,8 @@ class StateStore:
                     INSERT INTO current_findings (
                         vhost, stack, ecosystem, dependency, version, advisory_id, severity,
                         fixed_version, affected_range, advisory_summary, source_path, source_line,
-                        aliases_json, references_json, scanned_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        audit_scope, fix_is_semver_major, aliases_json, references_json, scanned_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     normalized_rows,
                 )
@@ -217,6 +232,8 @@ class StateStore:
                     "advisory_summary": row["advisory_summary"],
                     "source_path": row["source_path"],
                     "source_line": row["source_line"],
+                    "audit_scope": row["audit_scope"],
+                    "fix_is_semver_major": bool(row["fix_is_semver_major"]),
                     "aliases": json.loads(row["aliases_json"]),
                     "references": json.loads(row["references_json"]),
                     "scanned_at": row["scanned_at"],

@@ -1,14 +1,19 @@
 import os
 import sys
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(__file__)), "src"))
 
+from vhost_cve_monitor.audits import _scan_node
 from vhost_cve_monitor.audits import _normalize_npm_vuln_id
 from vhost_cve_monitor.audits import _parse_composer_audit
 from vhost_cve_monitor.audits import _parse_npm_audit
 from vhost_cve_monitor.audits import _parse_pip_audit
-from vhost_cve_monitor.models import Dependency
+from vhost_cve_monitor.models import Dependency, StackMatch
+from vhost_cve_monitor.subprocess_utils import CommandResult
 
 
 class AuditsTestCase(unittest.TestCase):
@@ -88,6 +93,99 @@ class AuditsTestCase(unittest.TestCase):
         self.assertEqual(summaries["nth-check"], "Inefficient Regular Expression Complexity in nth-check")
         self.assertEqual(summaries["postcss"], "Line return parsing error in PostCSS")
         self.assertEqual(summaries["webpack-dev-server"], "Exposure of webpack-dev-server dev middleware")
+
+    def test_parse_npm_audit_preserves_scope_and_semver_major_fix(self) -> None:
+        dependencies = [Dependency("npm", "form-data", "4.0.0", "/tmp/package-lock.json", 128)]
+        payload = {
+            "vulnerabilities": {
+                "form-data": {
+                    "severity": "high",
+                    "range": "<4.0.4",
+                    "fixAvailable": {"version": "5.0.0", "isSemVerMajor": True},
+                    "via": [
+                        {
+                            "source": 10,
+                            "title": "Unsafe random boundary in form-data",
+                            "url": "https://github.com/advisories/GHSA-test-form-data",
+                            "severity": "high",
+                            "range": "<4.0.4",
+                        }
+                    ],
+                }
+            }
+        }
+
+        issues = _parse_npm_audit(payload, dependencies, audit_scope="development")
+
+        self.assertEqual(len(issues), 1)
+        self.assertEqual(issues[0].vulnerability.audit_scope, "development")
+        self.assertTrue(issues[0].vulnerability.fix_is_semver_major)
+        self.assertEqual(issues[0].vulnerability.fixed_version, ">= 5.0.0")
+
+    def test_scan_node_keeps_runtime_and_full_audit_findings_separate(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "package-lock.json").write_text("{}", encoding="utf-8")
+            dependencies = [
+                Dependency("npm", "nodemailer", "8.0.5", str(root / "package-lock.json"), 21),
+                Dependency("npm", "form-data", "4.0.0", str(root / "package-lock.json"), 128),
+            ]
+            runtime_payload = {
+                "vulnerabilities": {
+                    "nodemailer": {
+                        "severity": "moderate",
+                        "range": "<8.0.9",
+                        "fixAvailable": {"version": "8.0.9"},
+                        "via": [
+                            {
+                                "source": 1,
+                                "title": "Runtime nodemailer advisory",
+                                "url": "https://github.com/advisories/GHSA-runtime",
+                                "severity": "moderate",
+                                "range": "<8.0.9",
+                            }
+                        ],
+                    }
+                }
+            }
+            full_payload = {
+                "vulnerabilities": {
+                    **runtime_payload["vulnerabilities"],
+                    "form-data": {
+                        "severity": "high",
+                        "range": "<4.0.4",
+                        "fixAvailable": {"version": "5.0.0", "isSemVerMajor": True},
+                        "via": [
+                            {
+                                "source": 2,
+                                "title": "Development form-data advisory",
+                                "url": "https://github.com/advisories/GHSA-development",
+                                "severity": "high",
+                                "range": "<4.0.4",
+                            }
+                        ],
+                    },
+                }
+            }
+
+            class EmptyDb:
+                def ensure_fresh(self, dependency, allow_network=True):
+                    return []
+
+            def fake_run(command, timeout, cwd=None):
+                if "--omit=dev" in command:
+                    return CommandResult(command=command, returncode=1, stdout=__import__("json").dumps(runtime_payload), stderr="")
+                return CommandResult(command=command, returncode=1, stdout=__import__("json").dumps(full_payload), stderr="")
+
+            with patch("vhost_cve_monitor.audits.collect_node_dependencies", return_value=(dependencies, [])):
+                with patch("vhost_cve_monitor.audits.command_exists", return_value=True):
+                    with patch("vhost_cve_monitor.audits.run_command", side_effect=fake_run):
+                        result = _scan_node(StackMatch("nodejs", "high", [], str(root)), EmptyDb(), timeout=1, allow_network=False)
+
+            scopes = {issue.dependency.name: issue.vulnerability.audit_scope for issue in result.issues}
+            self.assertEqual(scopes["nodemailer"], "runtime")
+            self.assertEqual(scopes["form-data"], "development")
+            self.assertTrue(next(issue for issue in result.issues if issue.dependency.name == "form-data").vulnerability.fix_is_semver_major)
 
     def test_parse_pip_audit_preserves_description_as_summary(self) -> None:
         dependencies = [Dependency("PyPI", "jinja2", "3.1.3", "/tmp/requirements.txt", 10)]

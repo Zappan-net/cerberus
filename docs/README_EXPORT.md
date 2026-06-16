@@ -11,7 +11,8 @@ This export document is intended for editable office formats such as DOCX. It is
 - nginx_parser reads `/etc/nginx/sites-enabled`, resolves useful includes, and extracts server names, roots, and upstream hints.
 - stack_detection applies explicit heuristics based on files and upstream names.
 - collectors reads package manifests, lockfiles, local virtualenvs, and service version markers.
-- audits runs optional ecosystem-native tools such as `npm audit`, `composer audit`, and `pip-audit`.
+- audits runs optional ecosystem-native tools such as npm audit, `composer audit`, and `pip-audit`.
+- npm scans run both `npm audit --omit=dev` and full `npm audit`, allowing Cerberus to separate production/runtime exposure from development/build dependency maintenance.
 - cve_db maintains a local SQLite advisory cache fed by targeted OSV queries.
 - state_store prevents alert spam by tracking previously sent findings and repeated failures.
 - notify delivers alerts through local sendmail, plain SMTP, STARTTLS SMTP, or authenticated SMTPS/SMTP.
@@ -115,7 +116,10 @@ The repository file is generic and safe to publish. The `/etc` file contains dep
 - Digest subjects are intentionally short and operational, keeping only product, highest severity, host scope, and alert count.
 - Alerts and digests show fixed versions when upstream advisory data provides them.
 - Digest mails keep the differential-alerting model, but now render retained findings by severity block and include advisory summaries when available.
+- npm digest mails split production/runtime findings from full-audit-only development/build findings. Runtime findings drive the primary subject severity when both scopes exist, while development/build findings remain visible in a separate section.
+- Identical digest findings sharing the same evidence file, package, installed version, advisory, and audit scope are grouped once with an `Affected targets` list instead of repeated as separate advisory blocks.
 - Recommendations are stack-aware and depend on ecosystem, package manager context, and whether a fixed version is known.
+- npm recommendations warn when an available fix is semver-major and avoid presenting `npm audit fix --force` as a safe default.
 - `test-mail` can simulate explicit severities, categories, and stack-specific vulnerability samples.
 - `validate-config` checks the loaded YAML structure and highlights obvious semantic conflicts before a scan starts.
 - `doctor` runs a local diagnostic pass over config, key paths, mail transport assumptions, optional audit tools, and nginx parsing.

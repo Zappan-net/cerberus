@@ -45,6 +45,8 @@ class StateStoreTestCase(unittest.TestCase):
                         "advisory_summary": "Exposure of webpack-dev-server dev middleware",
                         "source_path": "/srv/app/package-lock.json",
                         "source_line": 3286,
+                        "audit_scope": "development",
+                        "fix_is_semver_major": True,
                         "aliases": ["CVE-2026-1001"],
                         "references": ["https://github.com/advisories/GHSA-9jgg-88mc-972h"],
                     }
@@ -59,6 +61,8 @@ class StateStoreTestCase(unittest.TestCase):
             self.assertEqual(exported["breakdown"], {"HIGH": 1})
             self.assertEqual(exported["findings"][0]["vhost"], "app.domain.tld")
             self.assertEqual(exported["findings"][0]["advisory_summary"], "Exposure of webpack-dev-server dev middleware")
+            self.assertEqual(exported["findings"][0]["audit_scope"], "development")
+            self.assertTrue(exported["findings"][0]["fix_is_semver_major"])
 
 
 if __name__ == "__main__":

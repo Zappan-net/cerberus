@@ -78,7 +78,7 @@ class ScannerDigestTestCase(unittest.TestCase):
         self.assertIn("Summary: new or changed findings were grouped to avoid flooding the destination mailbox.", digest.body)
         self.assertIn("WARNING (1)", digest.body)
         self.assertIn("UNKNOWN (1)", digest.body)
-        self.assertIn("- admin.domain.tld | nodejs / npm | [/tmp/package-lock.json:42]", digest.body)
+        self.assertIn("- Affected targets: admin.domain.tld | nodejs / npm | [/tmp/package-lock.json:42]", digest.body)
         self.assertIn("  [UNKNOWN] serialize-javascript 6.0.2 -> fixed in >= 6.0.3 | GHSA-1", digest.body)
         self.assertIn("  Summary: Remote code execution in serialize-javascript", digest.body)
         self.assertEqual(digest.body.count("serialize-javascript 6.0.2"), 1)
@@ -280,15 +280,88 @@ class ScannerDigestTestCase(unittest.TestCase):
         self.assertLess(digest.body.index("HIGH (1)"), digest.body.index("MEDIUM (2)"))
         self.assertIn("Recommendation: prioritize these npm dependency upgrades first", digest.body)
         self.assertIn("Recommendation: schedule these npm dependency upgrades", digest.body)
-        self.assertIn("- domain.tld | nodejs / npm | [/tmp/package-lock.json:3286]", digest.body)
+        self.assertIn("- Affected targets: domain.tld | nodejs / npm | [/tmp/package-lock.json:3286]", digest.body)
         self.assertIn("  [HIGH] webpack-dev-server 4.15.2 -> fixed in >= 5.2.1 | GHSA-H", digest.body)
         self.assertIn("  Summary: Exposure of webpack-dev-server dev middleware", digest.body)
-        self.assertIn("- domain.tld | nodejs / npm | [/tmp/package-lock.json:2247]", digest.body)
+        self.assertIn("- Affected targets: domain.tld | nodejs / npm | [/tmp/package-lock.json:2247]", digest.body)
         self.assertIn("  [MEDIUM] postcss 7.0.39 -> fixed in >= 8.4.31 | GHSA-M", digest.body)
         self.assertIn("  Summary: Line return parsing error in PostCSS", digest.body)
-        self.assertIn("- admin.domain.tld | nodejs / npm | [/tmp/package-lock.json:17872]", digest.body)
+        self.assertIn("- Affected targets: admin.domain.tld | nodejs / npm | [/tmp/package-lock.json:17872]", digest.body)
         self.assertIn("  [MEDIUM] nth-check 1.0.2 -> fixed in >= 2.0.1 | GHSA-M2", digest.body)
         self.assertIn("  Summary: Inefficient Regular Expression Complexity in nth-check", digest.body)
+
+    def test_digest_prioritizes_runtime_npm_severity_and_keeps_dev_build_visibility(self) -> None:
+        scanner = self._build_scanner()
+        runtime = NotificationEvent(
+            category="vulnerability",
+            fingerprint="runtime",
+            subject="[Cerberus][MEDIUM][host] domain.tld nodemailer GHSA-R",
+            body="",
+            created_at=datetime.now(timezone.utc),
+            metadata={
+                "vhost": "domain.tld",
+                "dependency": "nodemailer",
+                "version": "8.0.5",
+                "vuln_id": "GHSA-R",
+                "severity": "MEDIUM",
+                "fixed_version": ">= 8.0.9",
+                "source_path": "/tmp/package-lock.json",
+                "source_line": 42,
+                "ecosystem": "npm",
+                "stack": "nodejs",
+                "audit_scope": "runtime",
+                "advisory_summary": "Runtime mail handling issue",
+            },
+        )
+        dev_admin = NotificationEvent(
+            category="vulnerability",
+            fingerprint="dev-admin",
+            subject="[Cerberus][HIGH][host] admin.domain.tld form-data GHSA-D",
+            body="",
+            created_at=datetime.now(timezone.utc),
+            metadata={
+                "vhost": "admin.domain.tld",
+                "dependency": "form-data",
+                "version": "4.0.0",
+                "vuln_id": "GHSA-D",
+                "severity": "HIGH",
+                "fixed_version": ">= 4.0.4",
+                "source_path": "/tmp/package-lock.json",
+                "source_line": 128,
+                "ecosystem": "npm",
+                "stack": "nodejs",
+                "audit_scope": "development",
+                "fix_is_semver_major": True,
+                "advisory_summary": "Development-only transitive advisory",
+            },
+        )
+        dev_public = NotificationEvent(
+            category="vulnerability",
+            fingerprint="dev-public",
+            subject="[Cerberus][HIGH][host] domain.tld form-data GHSA-D",
+            body="",
+            created_at=datetime.now(timezone.utc),
+            metadata={
+                **dev_admin.metadata,
+                "vhost": "domain.tld",
+            },
+        )
+
+        digest = scanner._build_digest_notification([runtime, dev_admin, dev_public], subject_all=True)
+
+        self.assertEqual(digest.subject, "[Cerberus][MEDIUM][{}] runtime npm findings".format(socket.gethostname()))
+        self.assertIn("Highest severity: MEDIUM", digest.body)
+        self.assertIn("Full audit highest severity: HIGH", digest.body)
+        self.assertIn("Development/build findings include HIGH advisories.", digest.body)
+        self.assertIn("Runtime / production findings", digest.body)
+        self.assertIn("Development / build findings", digest.body)
+        self.assertIn("- Affected targets: domain.tld | nodejs / npm | [/tmp/package-lock.json:42]", digest.body)
+        self.assertIn("  [MEDIUM] nodemailer 8.0.5 -> fixed in >= 8.0.9 | GHSA-R", digest.body)
+        self.assertIn("- Affected targets: admin.domain.tld, domain.tld | nodejs / npm | [/tmp/package-lock.json:128]", digest.body)
+        self.assertEqual(digest.body.count("form-data 4.0.0"), 1)
+        self.assertIn("Note: development/build finding absent from npm audit --omit=dev.", digest.body)
+        self.assertIn("Risk: npm marks the available fix as semver-major; review breakage before applying it.", digest.body)
+        self.assertIn("avoid `npm audit fix --force`", digest.body)
 
 
 if __name__ == "__main__":

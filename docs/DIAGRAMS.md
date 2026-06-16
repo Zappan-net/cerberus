@@ -24,7 +24,7 @@ sequenceDiagram
         SC->>D: detect stacks and roots
         D-->>SC: StackMatch[]
         loop for each stack
-            SC->>A: collect dependencies
+            SC->>A: collect dependencies and scoped native audit results
             A->>DB: lookup cached advisories / refresh if needed
             DB-->>A: Vulnerability[]
             A-->>SC: StackScanResult
@@ -76,6 +76,7 @@ flowchart TD
 
 - The timer is only a trigger. The actual work happens in the oneshot service.
 - The scanner aggregates every issue into internal notification objects before applying mail policy.
+- npm audit results are scoped before notification rendering: `--omit=dev` findings represent production/runtime exposure, while full-audit-only findings remain visible as development/build maintenance items.
 - SQLite stores advisory cache data, anti-spam state, and the materialized current findings snapshot used by `export-findings`.
 - Mail delivery is intentionally delegated to the local MTA instead of implemented directly in Cerberus.
 
