@@ -69,10 +69,13 @@ class CliTestCase(unittest.TestCase):
     def test_scan_once_accepts_only_vhost_filters(self) -> None:
         parser = build_parser()
 
-        args = parser.parse_args(["scan-once", "--only-vhost", "app.example.net", "--only-vhost", "admin.*"])
+        args = parser.parse_args(
+            ["scan-once", "--only-vhost", "app.example.net", "--only-vhost", "admin.*", "--force-notify"]
+        )
 
         self.assertEqual(args.command, "scan-once")
         self.assertEqual(args.only_vhost, ["app.example.net", "admin.*"])
+        self.assertTrue(args.force_notify)
 
     def test_admin_subcommands_are_available(self) -> None:
         parser = build_parser()

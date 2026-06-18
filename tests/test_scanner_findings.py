@@ -135,6 +135,48 @@ class ScannerFindingsTestCase(unittest.TestCase):
         self.assertIn("used at runtime or only during build/test", notifications[0].body)
         self.assertIn("Summary: Example advisory", notifications[0].body)
 
+    def test_force_notify_bypasses_deduplication_without_changing_state(self) -> None:
+        scanner = CerberusScanner(config=self.config, dry_run=True, allow_network=False)
+        dependency = Dependency(
+            ecosystem="npm",
+            name="example-package",
+            version="1.0.0",
+            source="/srv/example/package-lock.json",
+            source_line=42,
+        )
+        vulnerability = Vulnerability(
+            vuln_id="GHSA-example-0000-0000",
+            source="runtime-audit",
+            severity="HIGH",
+            summary="Example vulnerability",
+            details="",
+            published=None,
+            modified=None,
+            package_name=dependency.name,
+            ecosystem=dependency.ecosystem,
+            affected_version=dependency.version,
+            fixed_version=">= 1.0.1",
+            aliases=[],
+            references=[],
+        )
+        occurrences = [
+            {
+                "vhost": "app.example.net",
+                "stack": "nodejs",
+                "issue": AuditIssue(dependency, vulnerability, "npm-audit"),
+            }
+        ]
+
+        forced = scanner._build_issue_notifications(occurrences, force_notify=True)
+        first_normal = scanner._build_issue_notifications(occurrences)
+        second_normal = scanner._build_issue_notifications(occurrences)
+        forced_again = scanner._build_issue_notifications(occurrences, force_notify=True)
+
+        self.assertEqual(len(forced), 1)
+        self.assertEqual(len(first_normal), 1)
+        self.assertEqual(len(second_normal), 0)
+        self.assertEqual(len(forced_again), 1)
+
     def test_new_findings_are_all_notified_when_they_are_distinct(self) -> None:
         scanner = CerberusScanner(config=self.config, dry_run=True, allow_network=False)
         occurrences = []

@@ -10,6 +10,7 @@
 - Canonical advisory identifier selection, preferring `GHSA-*` or `CVE-*` when available.
 - Stack-aware `test-mail` simulation with package, version, advisory, and evidence overrides for remediation previewing.
 - Direct `internal-error` notifications for unhandled Cerberus execution failures, with a GitHub bug-report hint.
+- `scan-once --force-notify` for sending all current vulnerability findings without changing deduplication state.
 - Regression tests for severity precedence, fixed-version rendering, compact subjects, and infra-visible multi-vhost projection.
 
 ### Changed

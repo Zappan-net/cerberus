@@ -266,11 +266,17 @@ class CerberusScanner:
             exported = self.state.export_current_findings()
         return exported
 
-    def scan_once(self, only_vhosts: Optional[List[str]] = None) -> Tuple[List[VhostScanResult], List[NotificationEvent]]:
+    def scan_once(
+        self,
+        only_vhosts: Optional[List[str]] = None,
+        force_notify: bool = False,
+    ) -> Tuple[List[VhostScanResult], List[NotificationEvent]]:
         LOGGER.info("Starting scan cycle")
+        if force_notify:
+            LOGGER.warning("Forced notification mode enabled; vulnerability deduplication state will not be changed")
         now, results, issue_occurrences, failure_notifications = self._collect_scan_data(only_vhosts=only_vhosts)
         self.state.replace_current_findings(self._current_findings_snapshot(issue_occurrences), scanned_at=now.isoformat())
-        notifications = self._build_issue_notifications(issue_occurrences) + failure_notifications
+        notifications = self._build_issue_notifications(issue_occurrences, force_notify=force_notify) + failure_notifications
         LOGGER.info("Prepared %s notifications", len(notifications))
         for notification in self._prepare_notifications_for_delivery(notifications):
             LOGGER.info("Sending %s notification: %s", notification.category, notification.subject)
@@ -784,7 +790,11 @@ class CerberusScanner:
             ),
         )
 
-    def _build_issue_notifications(self, occurrences: List[Dict]) -> List[NotificationEvent]:
+    def _build_issue_notifications(
+        self,
+        occurrences: List[Dict],
+        force_notify: bool = False,
+    ) -> List[NotificationEvent]:
         notifications = []
         hostname = socket.gethostname()
         now = datetime.now(timezone.utc)
@@ -825,7 +835,7 @@ class CerberusScanner:
                     finding.advisory_id,
                     finding.source_path,
                 )
-                if not self.state.should_alert(fingerprint, payload):
+                if not force_notify and not self.state.should_alert(fingerprint, payload):
                     continue
                 fixed_line = (
                     "Fixed version: {}".format(finding.fixed_version)

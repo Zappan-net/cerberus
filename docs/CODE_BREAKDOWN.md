@@ -619,6 +619,7 @@ Supported options:
 - `--offline`
 - `--verbose`
 - `scan-once --only-vhost <pattern>`
+- `scan-once --force-notify`
 - `export-findings --output /path/file.json`
 
 Supported subcommands:
@@ -632,6 +633,8 @@ Supported subcommands:
 - `explain-vhost`
 - `export-findings`
 - `test-mail`
+
+`scan-once --force-notify` bypasses `StateStore.should_alert()` only while building vulnerability notifications. It deliberately leaves the stored fingerprints unchanged, so a forced operational report neither resets nor seeds normal differential alerting. Scan-failure and internal-error deduplication retain their normal behavior.
 
 Additional `test-mail` options:
 

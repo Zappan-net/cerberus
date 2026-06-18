@@ -1,0 +1,285 @@
+Cerberus TODO
+=============
+
+Continuous integration
+----------------------
+
+- Add `.github/workflows/test.yml`
+  Goal: run the full Python test suite on every push and pull request, then run `python -m compileall src tests`.
+
+- Add shell validation to CI
+  Goal: run `sh -n` on `packaging/scripts/install.sh` and `packaging/scripts/testmail`, and add `shellcheck` later if the workflow stays stable.
+
+- Add `.github/workflows/package.yml`
+  Goal: build the Debian package on every push and pull request, then upload the build artifacts for inspection.
+
+- Add `.github/workflows/release.yml`
+  Goal: build and publish release artifacts on Git tags, including the `.deb` and Python build outputs.
+
+- Keep the CI intentionally lightweight
+  Goal: use standard GitHub runners without Docker or service containers unless a Debian-specific mismatch later proves they are required.
+
+- Validate the promises Cerberus actually makes
+  Goal: ensure the CI checks what matters operationally for this project: tests, Python importability, packaging, and install/runtime command availability.
+
+Admin UX / operations
+---------------------
+
+- Add `validate-config`
+  Goal: validate the YAML structure, required keys, value types, and obvious semantic conflicts before a scan starts.
+
+- Add `doctor`
+  Goal: provide a single diagnostic command that checks config loading, writable paths, state DB access, mail transport availability, audit tool presence, and nginx discovery assumptions.
+
+- Add `list-vhosts`
+  Goal: list the vhosts Cerberus currently sees after nginx parsing and filtering, with the resolved root/upstream context.
+
+- Add `explain-vhost <name>`
+  Goal: explain why a given vhost is or is not scanned, which stack candidates were detected, which roots/manifests were considered, and which filters applied.
+
+- Add `scan-once --only-vhost <name>`
+  Goal: support focused troubleshooting and iterative validation on a single target without scanning the full host.
+
+- Extend `export-findings` with `--output /path/file.json`
+  Goal: write the materialized findings snapshot directly to a file for third-party consumers, automation, and scheduled exports.
+
+
+Multi-server and multi-stack expansion plan
+-------------------------------------------
+
+Scope and non-goals
+~~~~~~~~~~~~~~~~~~~
+
+- Expand Cerberus from an nginx-specific CVE monitor into a local application exposure inventory and vulnerability prioritizer.
+- Keep the local-first model: no mandatory controller, cloud account, database server, or resident web service.
+- Preserve differential notifications, offline advisory caching, SQLite state, JSON export, and explicit Debian/systemd operation.
+- Do not add lighttpd or Traefik in this roadmap.
+- Avoid a matrix of server-specific scanners. Exposure discovery, project detection, dependency collection, auditing, normalization, and rendering must remain separate layers.
+- Do not execute automatic dependency upgrades. Cerberus may explain and propose remediation, but operators retain control of changes and deployment.
+
+Target architecture
+~~~~~~~~~~~~~~~~~~~
+
+- Introduce a stable `ExposureTarget` model containing:
+  - provider (`nginx`, `apache`, `haproxy`, `caddy`, `docker`, or `podman`)
+  - hostname and optional aliases
+  - listener address, port, and protocol when known
+  - source configuration file and line evidence
+  - document root, upstream URL, Unix socket, local port, or container identity
+  - TLS termination and public exposure hints when determinable
+  - detected projects and provenance
+- Introduce an `ExposureProvider` interface:
+  - `discover()` returns normalized exposure targets
+  - provider failures are isolated and reported without stopping other providers
+  - every inferred field carries evidence or an explicit confidence level
+- Keep stack detection provider-independent. A local path, socket, port, process, or mounted container path should enter the same project-detection pipeline.
+- Introduce a stable `ProjectIdentity` based on canonical project root, ecosystem, manifest/lockfile, and runtime/container context.
+- Keep finding identity independent from vhost names. Findings are normalized by advisory, package, installed version, evidence, project, and audit scope, then projected back onto all affected targets.
+- Version the `export-findings` JSON schema before exposing new provider and project fields to third-party applications.
+
+Phase 0 - Refactor without behavior change
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+- Extract current nginx discovery behind `NginxExposureProvider` without changing scan results.
+- Replace direct `VhostConfig` assumptions in the scanner with the normalized exposure model.
+- Add compatibility adapters so existing config keys, CLI output, SQLite data, and notification fingerprints remain valid.
+- Add provider selection to configuration, with nginx enabled by default and all new providers opt-in initially.
+- Extend admin commands:
+  - `list-targets` lists normalized exposures from all enabled providers
+  - keep `list-vhosts` as a backwards-compatible nginx-oriented alias
+  - `explain-target <provider>:<name>` shows source evidence and correlation decisions
+  - keep `explain-vhost` compatible for nginx targets
+- Add golden fixtures for nginx before refactoring and assert byte-equivalent normalized scan results where practical.
+
+Exit criteria:
+
+- Existing nginx installations require no configuration migration.
+- Existing tests and Debian packaging pass unchanged from an operator perspective.
+- A scan with only nginx enabled produces the same projects, findings, fingerprints, and notifications as before.
+
+Phase 1 - Apache HTTP Server
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+- Parse enabled Debian Apache configuration, including `/etc/apache2/sites-enabled`, recursively useful `Include`/`IncludeOptional` directives, and variable-safe path handling.
+- Support the operational directives that affect exposure correlation:
+  - `<VirtualHost>`
+  - `ServerName` and `ServerAlias`
+  - `DocumentRoot`
+  - `ProxyPass` and `ProxyPassMatch`
+  - `SetHandler`/FastCGI and common PHP-FPM socket patterns
+  - relevant per-vhost TLS/listener metadata
+- Treat reverse-proxy-only and redirect-only Apache sites consistently with equivalent nginx targets.
+- Never execute Apache configuration; parse only readable files and reject unsafe dynamic constructs explicitly.
+- Add `doctor` checks for Apache binary/config paths and parser coverage warnings.
+
+Exit criteria:
+
+- Static-root PHP, proxied Node/Python, Unix-socket PHP-FPM, aliases, redirects, and malformed-site fixtures are covered.
+- The same project exposed by nginx and Apache is scanned once but retains both exposure targets.
+- Parser failures identify the source file and do not stop nginx or other providers.
+
+Phase 2 - Docker and Podman inventory
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+- Add opt-in container discovery through local Docker and Podman CLIs; do not require daemon socket access from an unprivileged installation unless explicitly configured.
+- Inventory running containers first, with an optional mode for stopped containers and local images.
+- Capture:
+  - container ID/name and immutable image digest when available
+  - image/tag
+  - published ports
+  - labels
+  - bind mounts and named volumes
+  - container health and runtime state
+  - compose project/service labels when available
+- Correlate proxy upstream ports and sockets to containers without assuming that every container is internet-facing.
+- Detect project manifests through readable bind mounts and reuse native ecosystem scanners where the host filesystem provides reliable evidence.
+- Add optional image vulnerability adapters for Trivy and Grype behind one normalized interface; neither tool becomes mandatory.
+- Distinguish application dependency findings from base-image/OS package findings in storage, exports, severity breakdowns, and recommendations.
+- Record scanner provenance and database age for image findings.
+
+Exit criteria:
+
+- A proxied container can be traced from hostname to upstream port to container/image and mounted project.
+- Unexposed containers do not inflate the primary internet-exposure severity.
+- Missing Docker/Podman/Trivy/Grype produces a diagnostic, not a scan failure.
+- Recreated containers with the same project and image digest do not generate artificial new findings solely because the container ID changed.
+
+Phase 3 - HAProxy
+~~~~~~~~~~~~~~~~~
+
+- Parse Debian HAProxy configuration and relevant included files.
+- Model `frontend`, `listen`, `backend`, `use_backend`, `default_backend`, `server`, and common host-header ACL routing.
+- Correlate frontends to backend addresses, local ports, Unix sockets, containers, and projects discovered by other providers.
+- Treat HAProxy primarily as an exposure/routing provider; do not invent a filesystem project when no local evidence exists.
+- Represent ambiguous ACL routing explicitly rather than assigning false certainty.
+- Add `explain-target` output showing the frontend -> ACL -> backend -> server correlation chain.
+
+Exit criteria:
+
+- Direct backends, host ACLs, default backends, local ports, Unix sockets, and unresolved remote backends are tested.
+- A project exposed by both nginx and HAProxy is scanned once and rendered with all affected targets.
+- Remote-only backends appear in inventory with an `unscannable` reason instead of silently disappearing.
+
+Phase 4 - Caddy
+~~~~~~~~~~~~~~~
+
+- Parse static Caddyfiles without invoking or trusting arbitrary external configuration generation.
+- Support site addresses and the directives required for correlation:
+  - `root`
+  - `reverse_proxy`
+  - `php_fastcgi`
+  - `redir`
+  - relevant `import` usage with bounded recursion
+- Add optional JSON configuration ingestion when an explicit readable file is configured; do not require the Caddy admin API.
+- Preserve Caddy's automatic HTTPS context as exposure metadata without pretending to verify certificate health.
+
+Exit criteria:
+
+- Static roots, PHP-FPM, reverse proxies, redirects, imports, and ambiguous snippets are covered by fixtures.
+- Caddy targets enter the same project/finding/digest pipeline as nginx and Apache targets.
+
+Phase 5 - Additional application ecosystems
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Implement each ecosystem as a collector/auditor adapter feeding the existing normalized finding model. Deliver them independently in this order:
+
+1. Go
+   - detect `go.mod` and `go.sum`
+   - use `govulncheck` when available
+   - distinguish imported modules from reachable vulnerable symbols when the tool provides that evidence
+2. Rust
+   - detect `Cargo.toml` and `Cargo.lock`
+   - use `cargo audit` when available
+   - preserve withdrawn/unmaintained/informational advisory categories without inflating CVE severity
+3. Ruby
+   - detect `Gemfile` and `Gemfile.lock`
+   - use `bundler-audit` when available
+   - preserve dependency groups when lockfile/tool evidence supports it
+4. Java
+   - detect Maven and Gradle lock/build metadata
+   - prefer machine-readable OSV-Scanner or another bounded adapter over parsing verbose build logs
+   - avoid running arbitrary Maven/Gradle project tasks by default
+5. .NET
+   - detect project/solution and lock/asset files
+   - use machine-readable `dotnet list package --vulnerable` output when supported
+   - separate direct and transitive packages
+
+For every ecosystem:
+
+- Define installed-version, advisory-ID, aliases, severity, fixed-version, dependency-scope, evidence, and summary mappings.
+- Preserve native-tool output provenance and retain `UNKNOWN` only when no source supplies a stronger severity.
+- Add stack-aware remediation that warns before major upgrades and never claims an unsafe automatic fix.
+- Add fixtures proving multiple advisories are not collapsed and duplicate provider exposures do not duplicate logical findings.
+- Keep operation useful when the native audit tool is absent by using the local OSV cache where package coordinates are reliable.
+
+Phase 6 - Risk prioritization
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+- Add explicit exposure dimensions to findings:
+  - production/runtime vs development/build/test
+  - public listener vs local/internal/unknown
+  - direct vs transitive dependency
+  - reachable evidence when a native scanner supports it
+  - running container/image vs inactive artifact
+- Enrich advisories optionally with CISA KEV and EPSS data while retaining offline cached operation.
+- Keep CVSS severity and operational priority separate. Do not rewrite upstream severity based on exposure; calculate a distinct priority/risk field.
+- Define deterministic priority rules and expose every contributing signal in `explain-finding`.
+- Ensure mail subjects remain conservative: a high-severity maintenance-only issue must not masquerade as confirmed critical public runtime exposure.
+
+Exit criteria:
+
+- Operators can explain why one HIGH finding is urgent and another is scheduled maintenance.
+- Priority remains stable across repeated scans with unchanged evidence.
+- Missing enrichment data never lowers a known upstream severity.
+
+Phase 7 - Reporting and integrations
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+- Extend the versioned JSON export with providers, targets, projects, findings, affected targets, risk signals, provenance, and collection timestamps.
+- Add an atomic export mode: write to a temporary file, fsync, then rename to the requested output path.
+- Add Prometheus textfile collector output without adding an HTTP service.
+- Add optional generic webhook delivery with signed payloads and bounded retry behavior.
+- Add resolved-finding history and metrics:
+  - first seen
+  - last seen
+  - resolved at
+  - recurrence count
+  - age and remediation time
+- Keep email concise; detailed machine-consumable evidence belongs in JSON exports rather than oversized messages.
+
+Phase 8 - Professional hardening
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+- Publish and validate JSON Schema for configuration and findings exports.
+- Add explicit SQLite schema versions and transactional migrations for provider/project/risk tables.
+- Add fixture-driven parser tests for every supported server version and malformed configuration class.
+- Add end-to-end tests that run discovery -> stack detection -> audit normalization -> SQLite -> differential notification -> JSON export.
+- Add command timeout, output-size, path traversal, symlink, recursive include, and untrusted manifest threat-model tests.
+- Add benchmark fixtures for hosts with hundreds of targets and large lockfiles.
+- Add manpages and completion scripts for admin commands.
+- Build signed release checksums and reproducible Debian package artifacts in CI.
+- Document privilege boundaries: which providers/tools require root, group membership, socket access, or only read access.
+
+Delivery order and release strategy
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+- `0.2.x`: provider abstraction and Apache support.
+- `0.3.x`: Docker/Podman inventory and optional image scanners.
+- `0.4.x`: HAProxy and cross-provider correlation.
+- `0.5.x`: Caddy support.
+- `0.6.x`: Go, Rust, and Ruby adapters.
+- `0.7.x`: Java and .NET adapters.
+- `0.8.x`: risk prioritization, KEV/EPSS enrichment, and richer exports.
+- `1.0.0`: stable provider/plugin interfaces, versioned export schema, migration guarantees, complete operator documentation, and supported upgrade path.
+
+Rules for every phase
+~~~~~~~~~~~~~~~~~~~~~
+
+- Ship one provider or ecosystem at a time behind targeted tests.
+- Keep new discovery providers opt-in until fixtures and field validation demonstrate stable behavior.
+- Preserve backward-compatible configuration and exports unless a versioned migration is documented.
+- Never let one provider/tool failure abort unrelated scans.
+- Never infer public exposure, reachability, or remediation certainty without evidence.
+- Never collapse distinct advisories, projects, or execution scopes merely to reduce email volume.
+- Deduplicate presentation while preserving all affected targets and provenance.
+- Update README, all relevant files under `docs/`, changelog, sample configuration, and Debian packaging notes with each delivered phase.

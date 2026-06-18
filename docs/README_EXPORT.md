@@ -126,6 +126,7 @@ The repository file is generic and safe to publish. The `/etc` file contains dep
 - `list-vhosts` shows the parsed nginx targets together with filter decisions and detected stacks.
 - `explain-vhost <name>` explains how Cerberus sees one target, including candidate roots and stack matches.
 - `scan-once --only-vhost ...` restricts a run to one or more selected vhosts for focused troubleshooting.
+- `scan-once --force-notify` sends all current vulnerability findings for one invocation without clearing or updating alert fingerprints; it can be combined with `--only-vhost`.
 - `export-findings` dumps the latest materialized findings snapshot as JSON for external consumers, and initializes that snapshot with a collection-only pass if none exists yet.
 - `export-findings --output /path/file.json` writes that same JSON snapshot directly to a file for automation or a third-party application.
 - Supported severities: `CRITICAL`, `HIGH`, `MEDIUM`, `WARNING`, `LOW`, `INFO`, `UNKNOWN`
@@ -143,6 +144,7 @@ The repository file is generic and safe to publish. The `/etc` file contains dep
   - `vhost-cve-monitor --config /etc/vhost-cve-monitor/config.yml list-vhosts`
   - `vhost-cve-monitor --config /etc/vhost-cve-monitor/config.yml explain-vhost app.example.net`
   - `vhost-cve-monitor --config /etc/vhost-cve-monitor/config.yml scan-once --only-vhost app.example.net`
+  - `vhost-cve-monitor --config /etc/vhost-cve-monitor/config.yml scan-once --only-vhost app.example.net --force-notify`
   - `vhost-cve-monitor --config /etc/vhost-cve-monitor/config.yml export-findings`
   - `vhost-cve-monitor --config /etc/vhost-cve-monitor/config.yml export-findings --output /var/lib/cerberus/findings.json`
 - Unhandled Cerberus execution failures generate a direct `internal-error` mail with a GitHub bug-report hint and are not wrapped into digest mode.

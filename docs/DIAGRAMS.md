@@ -90,6 +90,7 @@ flowchart TD
     G[explain-vhost] --> H[target detail + candidate roots + stack matches]
     I[scan-once --only-vhost ...] --> J[restricted scan scope]
     K[export-findings --output ...] --> L[JSON snapshot written to disk]
+    M[scan-once --force-notify] --> N[all current vulnerability findings; dedup state unchanged]
 ```
 
 Additional notes:
@@ -98,4 +99,5 @@ Additional notes:
 - `doctor` is operational validation: it checks the local environment assumptions Cerberus depends on at runtime.
 - `list-vhosts` and `explain-vhost` expose the nginx parsing, filtering, and stack-detection decisions used by the real scan path.
 - `scan-once --only-vhost ...` narrows collection and notification generation to selected targets for focused troubleshooting.
+- `scan-once --force-notify` bypasses vulnerability fingerprint filtering for one run without changing the stored differential-alert state.
 - `export-findings --output ...` uses the same materialized findings snapshot as `export-findings`, but writes it directly to disk for automation.

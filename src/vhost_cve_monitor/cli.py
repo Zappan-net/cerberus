@@ -32,6 +32,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         help="Restrict the scan to one or more vhosts matched with fnmatch patterns",
     )
+    scan_once_parser.add_argument(
+        "--force-notify",
+        action="store_true",
+        help="Send all current vulnerability findings without changing deduplication state",
+    )
     subparsers.add_parser("daemon", help="Run an internal periodic loop")
     subparsers.add_parser("sync-cve", help="Refresh cached advisories for known packages")
     subparsers.add_parser("validate-config", help="Validate the loaded configuration")
@@ -90,12 +95,16 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     try:
         if args.command == "scan-once":
-            results, notifications = scanner.scan_once(only_vhosts=args.only_vhost)
+            results, notifications = scanner.scan_once(
+                only_vhosts=args.only_vhost,
+                force_notify=args.force_notify,
+            )
             _emit_json(
                 {
                     "vhosts": len(results),
                     "notifications": len(notifications),
                     "only_vhost": args.only_vhost or [],
+                    "force_notify": args.force_notify,
                 }
             )
             return 0

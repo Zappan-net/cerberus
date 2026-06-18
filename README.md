@@ -326,6 +326,22 @@ vhost-cve-monitor --config /etc/vhost-cve-monitor/config.yml scan-once --only-vh
 vhost-cve-monitor --config /etc/vhost-cve-monitor/config.yml scan-once --only-vhost "admin.*"
 ```
 
+Force a mail containing every current vulnerability finding, including findings that were already notified:
+
+```bash
+vhost-cve-monitor --config /etc/vhost-cve-monitor/config.yml scan-once --force-notify
+```
+
+The option can be combined with a focused scan:
+
+```bash
+vhost-cve-monitor --config /etc/vhost-cve-monitor/config.yml scan-once \
+  --only-vhost app.example.net \
+  --force-notify
+```
+
+`--force-notify` bypasses vulnerability fingerprint filtering for that invocation only. It does not clear, initialize, or update the alert deduplication state, and it does not force repeated scan-failure or internal-error notifications. Avoid adding it to the regular systemd timer unless repeated full digests are intentional.
+
 Validate the loaded configuration:
 
 ```bash
