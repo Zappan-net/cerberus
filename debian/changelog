@@ -1,3 +1,14 @@
+cerberus (0.1.2) unstable; urgency=medium
+
+  * Add optional Codex CLI vulnerability analysis enrichment.
+  * Keep Codex disabled by default and preserve scanner severity as authoritative.
+  * Add strict JSON validation, sanitized subprocess environment, read-only sandbox request,
+    output-size limits, timeout handling, and SQLite analysis caching.
+  * Render validated contextual risk, confidence, reachability, evidence, limitations, and
+    recommendations in alert and digest emails.
+
+ -- Cerberus Maintainers <maintainers@example.net>  Mon, 27 Jul 2026 16:20:26 +0200
+
 cerberus (0.1.1) unstable; urgency=medium
 
   * Separate npm runtime and development audit findings in digests.
