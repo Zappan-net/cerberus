@@ -21,6 +21,7 @@ from .advisory_logic import (
     strongest_severity,
 )
 from .audits import scan_stack
+from .codex_analysis import CodexAnalysisRunner, codex_analysis_enabled
 from .config import validate_config
 from .cve_db import CVEDatabase
 from .models import AuditIssue, NotificationEvent, ScanFailure, VhostScanResult
@@ -113,6 +114,7 @@ class CerberusScanner:
         )
         self.state = StateStore(config["state"]["database_path"])
         self.mailer = Mailer(config, dry_run=dry_run)
+        self.codex_analyzer = CodexAnalysisRunner(config, self.state) if codex_analysis_enabled(config) else None
 
     def validate_loaded_config(self) -> Dict[str, object]:
         validation = validate_config(self.config)
@@ -447,6 +449,11 @@ class CerberusScanner:
                         lines.append("  Note: development/build finding absent from npm audit --omit=dev.")
                     if item.get("fix_is_semver_major"):
                         lines.append("  Risk: npm marks the available fix as semver-major; review breakage before applying it.")
+                    if isinstance(item.get("codex_analysis"), dict):
+                        lines.extend(
+                            "  {}".format(line)
+                            for line in self._codex_analysis_text_lines(item["codex_analysis"])
+                        )
         subject_suffix = "{} alerts".format(len(digest_items))
         if self._has_runtime_npm_and_development_npm(digest_items):
             subject_suffix = "runtime npm findings"
@@ -513,6 +520,7 @@ class CerberusScanner:
                 "affected_range": _clean_text(metadata.get("affected_range", "")) or None,
                 "audit_scope": _clean_text(metadata.get("audit_scope", "runtime")) or "runtime",
                 "fix_is_semver_major": bool(metadata.get("fix_is_semver_major")),
+                "codex_analysis": metadata.get("codex_analysis") if isinstance(metadata.get("codex_analysis"), dict) else None,
             }
             key = (
                 item["source_path"],
@@ -533,6 +541,8 @@ class CerberusScanner:
                 if not items[key]["affected_range"] and item["affected_range"]:
                     items[key]["affected_range"] = item["affected_range"]
                 items[key]["fix_is_semver_major"] = bool(items[key]["fix_is_semver_major"] or item["fix_is_semver_major"])
+                if not items[key].get("codex_analysis") and item.get("codex_analysis"):
+                    items[key]["codex_analysis"] = item["codex_analysis"]
                 continue
             item["affected_targets"] = [item["vhost"]]
             items[key] = item
@@ -799,6 +809,30 @@ class CerberusScanner:
         hostname = socket.gethostname()
         now = datetime.now(timezone.utc)
         for finding in self._normalize_findings(occurrences):
+            severity = normalize_severity(finding.severity)
+            base_analysis_payload = {
+                "dependency": finding.dependency,
+                "version": finding.version,
+                "advisory_id": finding.advisory_id,
+                "severity": severity,
+                "fixed_version": finding.fixed_version,
+                "affected_range": finding.affected_range,
+                "advisory_summary": finding.summary,
+                "source_path": finding.source_path,
+                "ecosystem": finding.ecosystem,
+                "audit_scope": finding.audit_scope,
+                "affected_targets": sorted({projection.vhost for projection in finding.projections}),
+            }
+            codex_analysis = None
+            if self.codex_analyzer:
+                analysis_payload = dict(base_analysis_payload)
+                analysis_payload.update(
+                    {
+                        "stack": finding.projections[0].stack if finding.projections else "",
+                        "source_line": finding.projections[0].source_line if finding.projections else None,
+                    }
+                )
+                codex_analysis = self.codex_analyzer.analyze(analysis_payload)
             recommendation = build_recommendation(
                 ecosystem=finding.ecosystem,
                 stack=finding.projections[0].stack,
@@ -810,7 +844,6 @@ class CerberusScanner:
                 fix_is_semver_major=finding.fix_is_semver_major,
             )
             for projection in finding.projections:
-                severity = normalize_severity(finding.severity)
                 payload = {
                     "vhost": projection.vhost,
                     "stack": projection.stack,
@@ -827,6 +860,8 @@ class CerberusScanner:
                     "audit_scope": finding.audit_scope,
                     "fix_is_semver_major": finding.fix_is_semver_major,
                 }
+                if codex_analysis and codex_analysis.get("analysis_status") in {"completed", "insufficient_context"}:
+                    payload["codex_analysis"] = codex_analysis
                 fingerprint = "issue:{}:{}:{}:{}:{}:{}".format(
                     projection.vhost,
                     projection.stack,
@@ -867,6 +902,8 @@ class CerberusScanner:
                     body_lines.append("Note: development/build finding absent from npm audit --omit=dev.")
                 if finding.fix_is_semver_major:
                     body_lines.append("Risk: npm marks the available fix as semver-major; review breakage before applying it.")
+                if codex_analysis and codex_analysis.get("analysis_status") in {"completed", "insufficient_context"}:
+                    body_lines.extend(["", *self._codex_analysis_text_lines(codex_analysis)])
                 if affected_line:
                     body_lines.insert(7, affected_line)
                 notifications.append(
@@ -886,6 +923,35 @@ class CerberusScanner:
                     )
                 )
         return notifications
+
+    def _codex_analysis_text_lines(self, analysis: Dict[str, object]) -> List[str]:
+        confidence = analysis.get("confidence")
+        confidence_text = "unknown"
+        if isinstance(confidence, (int, float)):
+            confidence_text = "{}%".format(round(float(confidence) * 100))
+        reachability = analysis.get("reachability") if isinstance(analysis.get("reachability"), dict) else {}
+        recommendations = analysis.get("recommendations") if isinstance(analysis.get("recommendations"), list) else []
+        limitations = analysis.get("limitations") if isinstance(analysis.get("limitations"), list) else []
+        lines = [
+            "Contextual analysis: AI-assisted static analysis",
+            "Official advisory severity: {}".format(analysis.get("advisory_severity") or "UNKNOWN"),
+            "Estimated contextual risk: {}".format(analysis.get("contextual_risk") or "UNKNOWN"),
+            "Confidence: {}".format(confidence_text),
+            "Analysis status: {}".format(analysis.get("analysis_status") or "unknown"),
+            "Dependency scope: {}".format(analysis.get("dependency_scope") or "unknown"),
+            "Reachability: {}".format(reachability.get("status") or "unknown"),
+            "Attacker-controlled input observed: {}".format(str(bool(reachability.get("attacker_controlled_input"))).lower()),
+            "Analysis summary: {}".format(analysis.get("summary") or "No contextual summary provided."),
+        ]
+        if reachability.get("explanation"):
+            lines.append("Reachability explanation: {}".format(reachability.get("explanation")))
+        if analysis.get("likely_impact"):
+            lines.append("Likely impact: {}".format(analysis.get("likely_impact")))
+        if recommendations:
+            lines.append("Recommended action: {}".format(recommendations[0].get("action", "review manually")))
+        if limitations:
+            lines.append("Limitations: {}".format("; ".join(str(item) for item in limitations[:3])))
+        return lines
 
     def _build_failure_notifications(self, scope: str, failures: List[ScanFailure]) -> List[NotificationEvent]:
         notifications = []

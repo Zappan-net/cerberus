@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, List
 
@@ -61,6 +61,13 @@ class StateStore:
                     scanned_at TEXT NOT NULL,
                     findings_count INTEGER NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS codex_analysis_cache (
+                    cache_key TEXT PRIMARY KEY,
+                    result_json TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL
+                );
                 """
             )
             self._ensure_column(connection, "current_findings", "audit_scope", "TEXT NOT NULL DEFAULT 'runtime'")
@@ -108,6 +115,48 @@ class StateStore:
                     (fingerprint, payload_hash, now, now),
                 )
             return True
+
+    def get_codex_analysis_cache(self, cache_key: str) -> Dict:
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT result_json
+                FROM codex_analysis_cache
+                WHERE cache_key = ? AND expires_at > ?
+                """,
+                (cache_key, now),
+            ).fetchone()
+        if not row:
+            return {}
+        try:
+            result = json.loads(row["result_json"])
+        except json.JSONDecodeError:
+            return {}
+        return result if isinstance(result, dict) else {}
+
+    def put_codex_analysis_cache(self, cache_key: str, result: Dict, ttl_seconds: int) -> None:
+        now_dt = datetime.now(timezone.utc)
+        expires_at = now_dt + timedelta(seconds=max(ttl_seconds, 0))
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO codex_analysis_cache (cache_key, result_json, status, created_at, expires_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(cache_key) DO UPDATE SET
+                    result_json = excluded.result_json,
+                    status = excluded.status,
+                    created_at = excluded.created_at,
+                    expires_at = excluded.expires_at
+                """,
+                (
+                    cache_key,
+                    json.dumps(result, sort_keys=True),
+                    str(result.get("analysis_status") or "unknown"),
+                    now_dt.isoformat(),
+                    expires_at.isoformat(),
+                ),
+            )
 
     def register_failure(self, scope: str, detail: Dict, threshold: int) -> bool:
         error_hash = self.stable_hash(detail)

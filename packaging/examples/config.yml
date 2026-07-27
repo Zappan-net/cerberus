@@ -46,3 +46,21 @@ filters:
     - _
   path_allowlist: []
   path_blocklist: []
+
+# Optional AI-assisted static triage through Codex CLI.
+# Disabled by default. The scanner severity remains authoritative.
+codex_analysis:
+  enabled: false
+  executable: codex
+  codex_home: ""
+  model: ""
+  timeout_seconds: 180
+  maximum_output_bytes: 65536
+  maximum_findings_per_run: 10
+  minimum_severity: MEDIUM
+  repository_path: ""
+  sandbox: read-only
+  network_access: false
+  cache_ttl_seconds: 86400
+  include_failure_diagnostics: true
+  prompt_template: ""

@@ -11,6 +11,7 @@
 - Stack-aware `test-mail` simulation with package, version, advisory, and evidence overrides for remediation previewing.
 - Direct `internal-error` notifications for unhandled Cerberus execution failures, with a GitHub bug-report hint.
 - `scan-once --force-notify` for sending all current vulnerability findings without changing deduplication state.
+- Optional disabled-by-default Codex CLI static analysis enrichment for vulnerability findings, with strict JSON validation, sanitized subprocess environment, timeout, output-size limit, and SQLite result caching.
 - Regression tests for severity precedence, fixed-version rendering, compact subjects, and infra-visible multi-vhost projection.
 
 ### Changed
@@ -32,3 +33,4 @@
 - Missing local mail transport binaries now surface as concise delivery errors instead of triggering recursive internal-error tracebacks.
 - Digest mails now state explicitly that they cover new or changed findings, preserve advisory summaries, and render findings in per-severity blocks with exact breakdown counts.
 - Cerberus now materializes the latest retained findings into SQLite and exposes them through `export-findings`, so external tools can consume current CVE state without a separate local web service.
+- Alert and digest emails can now include a separate AI-assisted contextual analysis section when Codex analysis is enabled and returns a validated result; official scanner severity remains authoritative.

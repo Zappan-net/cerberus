@@ -12,6 +12,7 @@ sequenceDiagram
     participant N as nginx_parser
     participant D as stack_detection
     participant A as audits/collectors
+    participant X as Codex CLI optional
     participant DB as SQLite cache/state
     participant M as Mailer/Postfix
 
@@ -32,6 +33,11 @@ sequenceDiagram
         SC->>DB: deduplicate alerts / track failures
     end
     SC->>DB: materialize current findings snapshot
+    opt codex_analysis.enabled
+        SC->>X: bounded static analysis for eligible findings
+        X-->>SC: validated JSON only
+        SC->>DB: cache accepted analysis result
+    end
     SC->>M: send one digest or individual alerts
     M-->>SC: handoff to local sendmail/Postfix
     SC-->>C: JSON summary
@@ -57,6 +63,9 @@ flowchart TD
     K --> L[Correlated vulnerabilities]
     I --> M[Scanner aggregation]
     L --> M
+    M --> Y{codex_analysis enabled?}
+    Y -->|optional| Z[Codex CLI static triage]
+    Z --> M
     M --> N[StateStore deduplication]
     M --> O[Current findings snapshot]
     N --> P[NotificationEvent]
@@ -77,6 +86,7 @@ flowchart TD
 - The timer is only a trigger. The actual work happens in the oneshot service.
 - The scanner aggregates every issue into internal notification objects before applying mail policy.
 - npm audit results are scoped before notification rendering: `--omit=dev` findings represent production/runtime exposure, while full-audit-only findings remain visible as development/build maintenance items.
+- Optional Codex analysis happens after normalized findings exist and before mail rendering; it never replaces scanner severity.
 - SQLite stores advisory cache data, anti-spam state, and the materialized current findings snapshot used by `export-findings`.
 - Mail delivery is intentionally delegated to the local MTA instead of implemented directly in Cerberus.
 

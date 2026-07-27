@@ -223,6 +223,64 @@ class NotifyTestCase(unittest.TestCase):
         self.assertIn("Stack / Ecosystem", html)
         self.assertIn("Sandbox escape in Jinja2 environment handling", html)
 
+    def test_vulnerability_html_escapes_codex_analysis(self) -> None:
+        config = {
+            "notifications": {
+                "email_to": ["ops@example.net"],
+                "email_from": "no-reply@example.net",
+                "method": "sendmail",
+                "sendmail_path": "/usr/sbin/sendmail",
+            }
+        }
+        mailer = Mailer(config=config, dry_run=True)
+        event = NotificationEvent(
+            category="vulnerability",
+            fingerprint="test-vuln",
+            subject="[Cerberus][HIGH][host] app.example.net lodash GHSA-test",
+            body="Hostname: host\nSeverity: HIGH\nSummary: test",
+            created_at=None,
+            metadata={
+                "severity": "HIGH",
+                "vhost": "app.example.net",
+                "stack": "nodejs",
+                "ecosystem": "npm",
+                "dependency": "lodash",
+                "version": "4.17.23",
+                "vuln_id": "GHSA-test",
+                "codex_analysis": {
+                    "analysis_status": "completed",
+                    "advisory_severity": "HIGH",
+                    "contextual_risk": "LOW",
+                    "confidence": 0.82,
+                    "dependency_scope": "runtime",
+                    "summary": "<script>alert(1)</script>",
+                    "likely_impact": "DoS",
+                    "reachability": {
+                        "status": "not_observed",
+                        "attacker_controlled_input": False,
+                        "explanation": "<b>not trusted</b>",
+                    },
+                    "evidence": [
+                        {
+                            "file": "package-lock.json",
+                            "line_start": 10,
+                            "line_end": 20,
+                            "finding": "<img src=x>",
+                        }
+                    ],
+                    "limitations": ["static only"],
+                    "recommendations": [{"priority": 1, "type": "upgrade", "action": "upgrade safely"}],
+                },
+            },
+        )
+
+        html = self._html_part(mailer._build_message(event))
+
+        self.assertIn("AI-assisted contextual analysis", html)
+        self.assertIn("&lt;script&gt;alert(1)&lt;/script&gt;", html)
+        self.assertNotIn("<script>alert(1)</script>", html)
+        self.assertIn("Estimated contextual risk", html)
+
     def test_digest_html_renders_advisory_summaries_and_breakdown(self) -> None:
         config = {
             "notifications": {

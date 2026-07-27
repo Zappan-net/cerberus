@@ -92,6 +92,7 @@ The project is split into explicit layers:
 │       ├── cli.py
 │       ├── collectors.py
 │       ├── config.py
+│       ├── codex_analysis.py
 │       ├── cve_db.py
 │       ├── logging_utils.py
 │       ├── models.py
@@ -102,6 +103,7 @@ The project is split into explicit layers:
 │       ├── state_store.py
 │       └── subprocess_utils.py
 └── tests
+    ├── test_codex_analysis.py
     ├── test_cli.py
     ├── test_collectors.py
     ├── test_nginx_parser.py
@@ -259,6 +261,7 @@ Main keys:
 - `notifications.summary_only`: when enabled, one scan generates one single summary mail containing every alert from that run.
 - digest mails keep the differential-alerting model, group retained findings by severity, and render advisory summaries when upstream data provides them.
 - npm digest mails distinguish production/runtime findings from development/build findings. Runtime findings drive the primary digest severity when both scopes are present, while full-audit-only findings remain visible in a separate development/build section.
+- `codex_analysis.enabled`: optional AI-assisted static triage through Codex CLI. Disabled by default.
 - `filters.*`: allowlist/blocklist for vhosts and paths.
 
 Authenticated SMTP examples:
@@ -286,6 +289,76 @@ notifications:
 ```
 
 Do not enable both `smtp_ssl` and `smtp_starttls` at the same time.
+
+### Optional Codex Static Analysis
+
+Cerberus can optionally ask Codex CLI to perform bounded static analysis for selected vulnerability findings. This is best-effort enrichment only: official scanner severity, advisory ID, fixed version, and notification deduplication remain unchanged if Codex is disabled, missing, times out, or returns invalid output.
+
+The feature is disabled by default:
+
+```yaml
+codex_analysis:
+  enabled: false
+  executable: codex
+  codex_home: ""
+  timeout_seconds: 180
+  maximum_output_bytes: 65536
+  maximum_findings_per_run: 10
+  minimum_severity: MEDIUM
+  repository_path: ""
+  sandbox: read-only
+  network_access: false
+  cache_ttl_seconds: 86400
+```
+
+When enabled, Cerberus invokes Codex non-interactively from the relevant source directory with an explicit output schema, read-only sandbox request, `approval_policy="never"`, a sanitized environment, a hard timeout, and a maximum output size. The subprocess does not receive SSH agent sockets, cloud credentials, SMTP secrets, or unrelated environment variables.
+
+`codex_home` points Codex CLI at the account/config directory it should use. If empty, Cerberus uses `<state.state_dir>/codex`. On a real deployment, set this to a dedicated Codex home that has been authenticated for the service user, for example `/var/lib/vhost-cve-monitor/codex`.
+
+Validated results add a separate email section named `AI-assisted contextual analysis` containing:
+
+- official advisory severity, preserved from the scanner
+- estimated contextual risk, reported separately
+- confidence
+- dependency scope
+- reachability and attacker-controlled input observations
+- likely impact, evidence, limitations, and remediation guidance
+
+Example distinction:
+
+```text
+Official advisory severity: HIGH
+Estimated contextual risk: LOW
+Confidence: 82%
+Analysis status: completed
+```
+
+Security model:
+
+- Codex output is accepted only if it is valid JSON and passes Cerberus schema validation.
+- Raw Codex output is never inserted directly into emails.
+- Source files, advisory text, comments, filenames, and package metadata are treated as untrusted input in the prompt.
+- Codex is not allowed to modify files, update dependencies, commit, push, deploy, create pull requests, or replace the scanner severity.
+- Cerberus requests read-only sandboxing through Codex CLI, but operating-system-level isolation depends on the installed Codex CLI and host environment.
+
+Environment overrides are available for automation:
+
+```text
+CERBERUS_CODEX_ANALYSIS_ENABLED=true
+CERBERUS_CODEX_ANALYSIS_EXECUTABLE=/usr/local/bin/codex
+CERBERUS_CODEX_ANALYSIS_CODEX_HOME=/var/lib/vhost-cve-monitor/codex
+CERBERUS_CODEX_ANALYSIS_MINIMUM_SEVERITY=HIGH
+CERBERUS_CODEX_ANALYSIS_MAXIMUM_FINDINGS_PER_RUN=3
+CERBERUS_CODEX_ANALYSIS_REPOSITORY_PATH=/srv/app
+```
+
+Troubleshooting:
+
+- `unavailable`: Codex executable was not found or could not start.
+- `timed_out`: Codex exceeded `timeout_seconds`.
+- `invalid_output` / `schema_invalid`: Codex did not return accepted structured JSON.
+- `missing_repository`: Cerberus could not identify an accessible source tree for the finding.
+- `insufficient_context`: Codex returned a valid result but could not prove enough context.
 
 ## Usage
 

@@ -143,6 +143,8 @@ def _html_vulnerability_body(event: NotificationEvent, severity: str, color: str
         content.append(_html_value_row("Note", "development/build finding absent from npm audit --omit=dev."))
     if metadata.get("fix_is_semver_major"):
         content.append(_html_value_row("Risk", "npm marks the available fix as semver-major; review breakage before applying it."))
+    if isinstance(metadata.get("codex_analysis"), dict):
+        content.append(_html_codex_analysis_block(metadata["codex_analysis"]))
     content.append("</div>")
     return _html_shell(event.subject, event.category.upper(), severity, color, "\n".join(content))
 
@@ -229,6 +231,8 @@ def _html_digest_body(event: NotificationEvent, severity: str, color: str) -> st
                     blocks.append(_html_value_row("Note", "development/build finding absent from npm audit --omit=dev."))
                 if item.get("fix_is_semver_major"):
                     blocks.append(_html_value_row("Risk", "npm marks the available fix as semver-major; review breakage before applying it."))
+                if isinstance(item.get("codex_analysis"), dict):
+                    blocks.append(_html_codex_analysis_block(item["codex_analysis"]))
                 blocks.append("</div>")
             blocks.append("</div></div>")
     return _html_shell(event.subject, event.category.upper(), severity, color, "\n".join(blocks))
@@ -316,6 +320,59 @@ def _html_digest_block_recommendation(severity: str, items: List[Dict[str, objec
         "schedule the findings in this block for upgrade, apply the fixed versions shown below, rebuild the "
         "relevant dependency state, and validate runtime usage before deployment."
     )
+
+
+def _html_codex_analysis_block(analysis: Dict[str, object]) -> str:
+    confidence = analysis.get("confidence")
+    confidence_text = "unknown"
+    if isinstance(confidence, (int, float)):
+        confidence_text = "{}%".format(round(float(confidence) * 100))
+    reachability = analysis.get("reachability") if isinstance(analysis.get("reachability"), dict) else {}
+    recommendations = analysis.get("recommendations") if isinstance(analysis.get("recommendations"), list) else []
+    limitations = analysis.get("limitations") if isinstance(analysis.get("limitations"), list) else []
+    evidence = analysis.get("evidence") if isinstance(analysis.get("evidence"), list) else []
+    rows = [
+        "<div style=\"margin-top:14px;border:1px solid #cbd5e1;border-radius:10px;padding:12px 14px;background:#f8fafc;\">",
+        "<div style=\"font-weight:700;color:#0f172a;margin-bottom:8px;\">AI-assisted contextual analysis</div>",
+        _html_value_row("Official advisory severity", escape(str(analysis.get("advisory_severity") or "UNKNOWN"))),
+        _html_value_row("Estimated contextual risk", escape(str(analysis.get("contextual_risk") or "UNKNOWN"))),
+        _html_value_row("Confidence", escape(confidence_text)),
+        _html_value_row("Analysis status", escape(str(analysis.get("analysis_status") or "unknown"))),
+        _html_value_row("Dependency scope", escape(str(analysis.get("dependency_scope") or "unknown"))),
+        _html_value_row("Reachability", escape(str(reachability.get("status") or "unknown"))),
+        _html_value_row(
+            "Attacker-controlled input",
+            escape(str(bool(reachability.get("attacker_controlled_input"))).lower()),
+        ),
+        _html_value_row("Summary", escape(str(analysis.get("summary") or "No contextual summary provided."))),
+    ]
+    if reachability.get("explanation"):
+        rows.append(_html_value_row("Reachability explanation", escape(str(reachability.get("explanation")))))
+    if analysis.get("likely_impact"):
+        rows.append(_html_value_row("Likely impact", escape(str(analysis.get("likely_impact")))))
+    if evidence:
+        rendered = []
+        for item in evidence[:3]:
+            if not isinstance(item, dict):
+                continue
+            location = str(item.get("file") or "unknown")
+            if item.get("line_start"):
+                location = "{}:{}".format(location, item.get("line_start"))
+            rendered.append("{} - {}".format(location, item.get("finding") or "evidence"))
+        if rendered:
+            rows.append(_html_value_row("Evidence", escape("; ".join(rendered))))
+    if recommendations:
+        actions = [
+            str(item.get("action"))
+            for item in recommendations[:3]
+            if isinstance(item, dict) and str(item.get("action") or "").strip()
+        ]
+        if actions:
+            rows.append(_html_value_row("Recommended action", escape("; ".join(actions))))
+    if limitations:
+        rows.append(_html_value_row("Limitations", escape("; ".join(str(item) for item in limitations[:3]))))
+    rows.append("</div>")
+    return "\n".join(rows)
 
 
 class Mailer:

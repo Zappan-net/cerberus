@@ -17,6 +17,7 @@ This export document is intended for editable office formats such as DOCX. It is
 - state_store prevents alert spam by tracking previously sent findings and repeated failures.
 - notify delivers alerts through local sendmail, plain SMTP, STARTTLS SMTP, or authenticated SMTPS/SMTP.
 - scanner orchestrates the full scan cycle.
+- codex_analysis optionally enriches findings with bounded AI-assisted static triage through Codex CLI. It is disabled by default and never replaces scanner severity.
 
 ## Runtime Flow
 
@@ -129,6 +130,7 @@ The repository file is generic and safe to publish. The `/etc` file contains dep
 - `scan-once --force-notify` sends all current vulnerability findings for one invocation without clearing or updating alert fingerprints; it can be combined with `--only-vhost`.
 - `export-findings` dumps the latest materialized findings snapshot as JSON for external consumers, and initializes that snapshot with a collection-only pass if none exists yet.
 - `export-findings --output /path/file.json` writes that same JSON snapshot directly to a file for automation or a third-party application.
+- Optional Codex static analysis can add a clearly separated contextual analysis block to vulnerability alerts and digests. It preserves the official advisory severity and reports contextual risk separately.
 - Supported severities: `CRITICAL`, `HIGH`, `MEDIUM`, `WARNING`, `LOW`, `INFO`, `UNKNOWN`
 - Supported categories: `test`, `vulnerability`, `scan-failure`, `internal-error`, `digest`
 - Example commands:
@@ -170,6 +172,64 @@ If Cerberus is already installed on a machine:
 
 Default deployments keep using local sendmail/Postfix. If you keep the example config unchanged, ensure `/usr/sbin/sendmail` exists on the host.
 If it does not, Cerberus reports a concise mail-delivery error instead of cascading through an internal Python traceback.
+
+## Optional Codex Static Analysis
+
+Cerberus can optionally invoke Codex CLI to perform static, contextual vulnerability triage for selected findings.
+
+Default status:
+
+- disabled by default
+- best-effort only
+- no change to existing scan, deduplication, or mail behavior when unavailable
+- scanner severity remains authoritative
+
+Typical configuration:
+
+```yaml
+codex_analysis:
+  enabled: false
+  executable: codex
+  codex_home: ""
+  timeout_seconds: 180
+  maximum_output_bytes: 65536
+  maximum_findings_per_run: 10
+  minimum_severity: MEDIUM
+  repository_path: ""
+  sandbox: read-only
+  network_access: false
+  cache_ttl_seconds: 86400
+```
+
+Security model:
+
+- Codex is invoked non-interactively with an output schema and `approval_policy="never"`.
+- `codex_home` selects the Codex CLI account/config directory. If empty, Cerberus falls back to `<state.state_dir>/codex`.
+- The subprocess receives a sanitized environment without SSH agent sockets, cloud credentials, SMTP passwords, or unrelated variables.
+- The source tree is treated as untrusted evidence, not as instructions.
+- Validated output is rendered as an optional `AI-assisted contextual analysis` section.
+- Raw model output is never inserted directly into email.
+- Cerberus requests read-only sandboxing through Codex CLI, but final OS-level isolation depends on the local Codex installation and host policy.
+
+Example enriched section:
+
+```text
+AI-assisted contextual analysis
+Official advisory severity: HIGH
+Estimated contextual risk: LOW
+Confidence: 82%
+Analysis status: completed
+Dependency scope: runtime
+Reachability: not_observed
+Analysis summary: The vulnerable version is present, but no attacker-controlled path was identified.
+Limitations: Static analysis cannot exclude dynamically generated inputs.
+```
+
+Known limitations:
+
+- Static analysis cannot prove absence of dynamically constructed flows.
+- The feature does not update dependencies, patch source files, commit, push, deploy, or create pull requests.
+- `unavailable`, `timed_out`, `invalid_output`, `schema_invalid`, and `missing_repository` statuses are diagnostic states only; alert delivery continues normally.
 
 ## Known Limits
 

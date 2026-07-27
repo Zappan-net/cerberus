@@ -214,6 +214,72 @@ class ScannerFindingsTestCase(unittest.TestCase):
         self.assertIn("Line return parsing error in PostCSS", digest.body)
         self.assertIn("Exposure of webpack-dev-server dev middleware", digest.body)
 
+    def test_codex_analysis_is_optional_and_preserves_original_severity(self) -> None:
+        scanner = CerberusScanner(config=self.config, dry_run=True, allow_network=False)
+
+        class FakeAnalyzer:
+            def analyze(self, finding):
+                return {
+                    "analysis_status": "completed",
+                    "component_status": "present",
+                    "dependency_scope": "runtime",
+                    "dependency_path": ["application", finding["dependency"]],
+                    "advisory_severity": "HIGH",
+                    "contextual_risk": "LOW",
+                    "confidence": 0.82,
+                    "reachability": {
+                        "status": "not_observed",
+                        "attacker_controlled_input": False,
+                        "explanation": "No external input path was identified.",
+                    },
+                    "exploitation_prerequisites": ["Attacker controls vulnerable input."],
+                    "likely_impact": "Potential denial of service.",
+                    "evidence": [
+                        {
+                            "file": "package-lock.json",
+                            "line_start": 42,
+                            "line_end": 42,
+                            "finding": "The vulnerable package is installed.",
+                        }
+                    ],
+                    "limitations": ["Static analysis only."],
+                    "recommendations": [
+                        {
+                            "priority": 1,
+                            "type": "upgrade",
+                            "action": "Upgrade after compatibility testing.",
+                        }
+                    ],
+                    "summary": "The component is present, but no reachable external path was observed.",
+                }
+
+        scanner.codex_analyzer = FakeAnalyzer()
+        dependency = Dependency("npm", "lodash", "4.17.23", "/srv/example/package-lock.json", 42)
+        vulnerability = Vulnerability(
+            vuln_id="GHSA-35jh-r3h4-6jhm",
+            source="runtime-audit",
+            severity="HIGH",
+            summary="Prototype pollution in lodash",
+            details="",
+            published=None,
+            modified=None,
+            package_name=dependency.name,
+            ecosystem=dependency.ecosystem,
+            affected_version=dependency.version,
+            fixed_version=">= 4.17.24",
+            aliases=[],
+            references=[],
+        )
+
+        notifications = scanner._build_issue_notifications(
+            [{"vhost": "app.example.net", "stack": "nodejs", "issue": AuditIssue(dependency, vulnerability, "npm-audit")}]
+        )
+
+        self.assertEqual(notifications[0].metadata["severity"], "HIGH")
+        self.assertEqual(notifications[0].metadata["codex_analysis"]["contextual_risk"], "LOW")
+        self.assertIn("Official advisory severity: HIGH", notifications[0].body)
+        self.assertIn("Estimated contextual risk: LOW", notifications[0].body)
+
 
 if __name__ == "__main__":
     unittest.main()

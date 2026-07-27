@@ -73,7 +73,9 @@ The normal scan path is:
    Returns cached vulnerability data or refreshes it from OSV if stale and network is allowed.
 8. [state_store.py](../src/vhost_cve_monitor/state_store.py)
    Decides whether an alert should be emitted or suppressed as already known.
-9. [notify.py](../src/vhost_cve_monitor/notify.py)
+9. [codex_analysis.py](../src/vhost_cve_monitor/codex_analysis.py)
+   Optionally invokes Codex CLI for bounded static triage and validates the structured result.
+10. [notify.py](../src/vhost_cve_monitor/notify.py)
    Sends the resulting mail or prints it in dry-run mode.
 
 The scanner never assumes one stack per vhost. A vhost may produce multiple `StackMatch` entries if several markers are detected.
@@ -133,6 +135,8 @@ Important configuration groups:
   level and optional file path
 - `filters`
   allowlist and blocklist for vhosts and paths
+- `codex_analysis`
+  disabled-by-default Codex CLI enrichment settings
 
 Design choice:
 
@@ -170,6 +174,38 @@ Design choice:
 - verbose logging shows which command is running and where
 
 This is one of the key anti-hang layers in the system.
+
+### 4.4a [codex_analysis.py](../src/vhost_cve_monitor/codex_analysis.py)
+
+This module implements optional AI-assisted vulnerability triage through Codex CLI.
+
+It is deliberately outside the scanner core so the main vulnerability pipeline remains deterministic when the feature is disabled or unavailable.
+
+Responsibilities:
+
+- decide whether a finding is eligible according to `codex_analysis.minimum_severity`
+- resolve and bound the source directory used as Codex working directory
+- construct a non-shell subprocess command
+- request Codex ephemeral, read-only, non-interactive execution with `approval_policy="never"`
+- set `CODEX_HOME` from `codex_analysis.codex_home` or `<state.state_dir>/codex`
+- pass a strict JSON schema to Codex
+- sanitize the subprocess environment
+- enforce timeout and maximum output size
+- validate the returned JSON before it can reach notifications
+- cache successful or insufficient-context results in SQLite
+
+Security controls:
+
+- no `shell=True`
+- no SSH agent socket or cloud credential inheritance
+- no SMTP password inheritance
+- no raw Codex output in mail
+- no change to official advisory severity
+- no automatic remediation, dependency updates, commits, pushes, pull requests, or deployments
+
+Residual limitation:
+
+- Cerberus requests Codex read-only sandboxing, but final filesystem and network isolation depends on the installed Codex CLI and operating-system policy.
 
 ### 4.5 [nginx_parser.py](../src/vhost_cve_monitor/nginx_parser.py)
 
@@ -395,6 +431,9 @@ SQLite tables:
 
 - `alert_state`
 - `repeated_failures`
+- `codex_analysis_cache`
+
+`codex_analysis_cache` stores validated Codex analysis results by a stable key containing advisory, package, version, source evidence, prompt version, schema version, and source hash. It is independent from alert deduplication and only avoids repeated best-effort analysis of unchanged findings.
 
 #### Alert deduplication
 
@@ -443,6 +482,7 @@ Behavior:
 - logs transport choice in verbose mode
 - supports relay authentication via `smtp_username` plus either `smtp_password` or `smtp_password_env`
 - rejects invalid combinations such as enabling both `smtp_ssl` and `smtp_starttls`
+- renders validated Codex analysis in a clearly separated `AI-assisted contextual analysis` block for both single vulnerability alerts and digests
 
 Dry-run mode is important because it lets you validate the full scan path without spamming real recipients.
 
@@ -520,6 +560,7 @@ The main class is `CerberusScanner`.
 - initialize `CVEDatabase`
 - initialize `StateStore`
 - initialize `Mailer`
+- initialize `CodexAnalysisRunner` only when `codex_analysis.enabled` is true
 
 #### `scan_once()`
 
@@ -529,8 +570,9 @@ This is the main pipeline:
 2. apply allowlist/blocklist logic
 3. detect stacks per vhost
 4. run `scan_stack()` for each stack
-5. build notification events for issues and failures
-6. send notifications
+5. optionally enrich eligible normalized findings with validated Codex static analysis
+6. build notification events for issues and failures
+7. send notifications
 
 Verbose logging in this module tells you exactly:
 

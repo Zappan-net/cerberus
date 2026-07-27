@@ -51,6 +51,22 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "path_allowlist": [],
         "path_blocklist": [],
     },
+    "codex_analysis": {
+        "enabled": False,
+        "executable": "codex",
+        "codex_home": "",
+        "model": "",
+        "timeout_seconds": 180,
+        "maximum_output_bytes": 65536,
+        "maximum_findings_per_run": 10,
+        "minimum_severity": "MEDIUM",
+        "repository_path": "",
+        "sandbox": "read-only",
+        "network_access": False,
+        "cache_ttl_seconds": 86400,
+        "include_failure_diagnostics": True,
+        "prompt_template": "",
+    },
 }
 
 
@@ -66,7 +82,7 @@ def _deep_merge(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any
 
 def load_config(path: Optional[Union[str, Path]]) -> Dict[str, Any]:
     if not path:
-        return DEFAULT_CONFIG
+        return _apply_env_overrides(DEFAULT_CONFIG)
     config_path = Path(path)
     if not config_path.exists():
         raise FileNotFoundError(f"Config file not found: {config_path}")
@@ -74,7 +90,40 @@ def load_config(path: Optional[Union[str, Path]]) -> Dict[str, Any]:
         data = yaml.safe_load(handle) or {}
     if not isinstance(data, dict):
         raise ValueError("Config root must be a mapping")
-    return _deep_merge(DEFAULT_CONFIG, data)
+    return _apply_env_overrides(_deep_merge(DEFAULT_CONFIG, data))
+
+
+def _env_bool(value: str) -> bool:
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _apply_env_overrides(config: Dict[str, Any]) -> Dict[str, Any]:
+    import os
+
+    merged = _deep_merge({}, config)
+    codex = dict(merged.get("codex_analysis") or {})
+    env_map = {
+        "CERBERUS_CODEX_ANALYSIS_ENABLED": ("enabled", _env_bool),
+        "CERBERUS_CODEX_ANALYSIS_EXECUTABLE": ("executable", str),
+        "CERBERUS_CODEX_ANALYSIS_CODEX_HOME": ("codex_home", str),
+        "CERBERUS_CODEX_ANALYSIS_MODEL": ("model", str),
+        "CERBERUS_CODEX_ANALYSIS_TIMEOUT_SECONDS": ("timeout_seconds", int),
+        "CERBERUS_CODEX_ANALYSIS_MAXIMUM_OUTPUT_BYTES": ("maximum_output_bytes", int),
+        "CERBERUS_CODEX_ANALYSIS_MAXIMUM_FINDINGS_PER_RUN": ("maximum_findings_per_run", int),
+        "CERBERUS_CODEX_ANALYSIS_MINIMUM_SEVERITY": ("minimum_severity", str),
+        "CERBERUS_CODEX_ANALYSIS_REPOSITORY_PATH": ("repository_path", str),
+        "CERBERUS_CODEX_ANALYSIS_SANDBOX": ("sandbox", str),
+        "CERBERUS_CODEX_ANALYSIS_NETWORK_ACCESS": ("network_access", _env_bool),
+        "CERBERUS_CODEX_ANALYSIS_CACHE_TTL_SECONDS": ("cache_ttl_seconds", int),
+        "CERBERUS_CODEX_ANALYSIS_INCLUDE_FAILURE_DIAGNOSTICS": ("include_failure_diagnostics", _env_bool),
+        "CERBERUS_CODEX_ANALYSIS_PROMPT_TEMPLATE": ("prompt_template", str),
+    }
+    for env_name, (key, caster) in env_map.items():
+        if env_name not in os.environ:
+            continue
+        codex[key] = caster(os.environ[env_name])
+    merged["codex_analysis"] = codex
+    return merged
 
 
 def validate_config(config: Dict[str, Any]) -> Dict[str, List[str]]:
@@ -86,6 +135,7 @@ def validate_config(config: Dict[str, Any]) -> Dict[str, List[str]]:
     notifications = config.get("notifications") or {}
     state = config.get("state") or {}
     logging_config = config.get("logging") or {}
+    codex = config.get("codex_analysis") or {}
 
     sites_enabled_dir = str(nginx.get("sites_enabled_dir") or "").strip()
     if not sites_enabled_dir:
@@ -156,5 +206,32 @@ def validate_config(config: Dict[str, Any]) -> Dict[str, List[str]]:
     level = str(logging_config.get("level") or "").upper()
     if level and level not in {"CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG"}:
         errors.append("logging.level must be one of CRITICAL, ERROR, WARNING, INFO, DEBUG")
+
+    if not isinstance(codex.get("enabled"), bool):
+        errors.append("codex_analysis.enabled must be a boolean")
+    if not str(codex.get("executable") or "").strip():
+        errors.append("codex_analysis.executable must be set")
+    for key in ("timeout_seconds", "maximum_output_bytes", "maximum_findings_per_run", "cache_ttl_seconds"):
+        value = codex.get(key)
+        if not isinstance(value, int) or value < 0:
+            errors.append("codex_analysis.{} must be an integer greater than or equal to 0".format(key))
+    if isinstance(codex.get("timeout_seconds"), int) and codex.get("timeout_seconds", 0) <= 0:
+        errors.append("codex_analysis.timeout_seconds must be greater than 0")
+    if isinstance(codex.get("maximum_output_bytes"), int) and codex.get("maximum_output_bytes", 0) <= 0:
+        errors.append("codex_analysis.maximum_output_bytes must be greater than 0")
+    if str(codex.get("minimum_severity") or "").upper() not in {
+        "CRITICAL",
+        "HIGH",
+        "MEDIUM",
+        "WARNING",
+        "LOW",
+        "INFO",
+        "UNKNOWN",
+    }:
+        errors.append("codex_analysis.minimum_severity must be a known severity")
+    if str(codex.get("sandbox") or "").strip() not in {"read-only", "workspace-read-only"}:
+        warnings.append("codex_analysis.sandbox should normally be read-only")
+    if codex.get("network_access"):
+        warnings.append("codex_analysis.network_access should remain false unless explicitly required")
 
     return {"errors": errors, "warnings": warnings}
