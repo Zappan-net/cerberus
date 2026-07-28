@@ -5,6 +5,8 @@
 [![Tested on Debian 12](https://img.shields.io/badge/Debian-12-red.svg)](https://www.debian.org/)
 [![Release](https://img.shields.io/github/v/release/Zappan-net/cerberus)](https://github.com/Zappan-net/cerberus/releases)
 [![Last Commit](https://img.shields.io/github/last-commit/Zappan-net/cerberus)](https://github.com/Zappan-net/cerberus/commits/main)
+[![Codex CLI optional](https://img.shields.io/badge/Codex%20CLI-optional-111827.svg)](#optional-codex-static-analysis)
+[![AI triage disabled by default](https://img.shields.io/badge/AI%20triage-disabled%20by%20default-475569.svg)](#optional-codex-static-analysis)
 
 Cerberus is a maintainable Python 3 monitor for Debian servers that inspects nginx vhosts, detects the application stack behind each vhost, runs stack-specific security audits when possible, correlates detected versions with a local SQLite advisory cache, and sends email alerts only for new or materially changed findings.
 
@@ -24,6 +26,7 @@ Cerberus is a maintainable Python 3 monitor for Debian servers that inspects ngi
 - built for classic Debian hosts with multiple nginx vhosts and mixed stacks
 - keeps a local SQLite advisory cache and still works in offline scans against cached data
 - sends readable HTML alerts with severity grouping, fixed versions, and concise remediation hints
+- optionally enriches vulnerability alerts with Codex CLI static triage while keeping scanner severity authoritative
 
 ![Cerberus HTML alert example](docs/mail-example-short.png)
 
