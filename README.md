@@ -3,7 +3,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/)
 [![Tested on Debian 12](https://img.shields.io/badge/Debian-12-red.svg)](https://www.debian.org/)
-[![Release](https://img.shields.io/github/v/release/Zappan-net/cerberus)](https://github.com/Zappan-net/cerberus/releases)
+[![Latest stable release](https://img.shields.io/github/v/release/Zappan-net/cerberus?label=release)](https://github.com/Zappan-net/cerberus/releases/latest)
 [![Last Commit](https://img.shields.io/github/last-commit/Zappan-net/cerberus)](https://github.com/Zappan-net/cerberus/commits/main)
 [![Codex CLI optional](https://img.shields.io/badge/Codex%20CLI-optional-111827.svg)](#optional-codex-static-analysis)
 [![AI triage disabled by default](https://img.shields.io/badge/AI%20triage-disabled%20by%20default-475569.svg)](#optional-codex-static-analysis)
