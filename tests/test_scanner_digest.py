@@ -8,9 +8,28 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(__file__)), "src
 
 from vhost_cve_monitor.scanner import CerberusScanner
 from vhost_cve_monitor.models import NotificationEvent
+from vhost_cve_monitor.notify import _html_body
 
 
 class ScannerDigestTestCase(unittest.TestCase):
+    def test_stack_discovery_diagnostic_is_not_a_vulnerability(self):
+        scanner = self._build_scanner()
+        reason = "stack_not_detected"
+        summary = scanner._failure_summary(reason, "app.example.net", "")
+        recommendation = scanner._failure_recommendation(reason, "unknown")
+        event = NotificationEvent(category="scan-failure", fingerprint="discovery", subject="coverage", body="",
+            created_at=datetime.now(timezone.utc), metadata={
+                "vhost": "app.example.net", "dependency": "stack discovery", "vuln_id": reason,
+                "severity": "WARNING", "audit_scope": "scanner", "advisory_summary": summary,
+                "recommendation": recommendation, "detail": "<unavailable>"})
+        digest = scanner._build_digest_notification([event], subject_all=True)
+        for rendered in (digest.body, _html_body(digest)):
+            self.assertIn("dependency auditing could not start", rendered)
+            self.assertIn("private mount mappings", rendered)
+            self.assertNotIn("Fixed version", rendered)
+            self.assertNotIn("apply the fixed versions", rendered)
+        self.assertIn("&lt;unavailable&gt;", _html_body(digest))
+
     def _build_scanner(self) -> CerberusScanner:
         config = {
             "scanner": {

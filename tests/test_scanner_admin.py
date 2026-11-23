@@ -9,10 +9,22 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(__file__)), "src
 
 from vhost_cve_monitor.config import validate_config
 from vhost_cve_monitor.scanner import CerberusScanner
-from vhost_cve_monitor.models import StackScanResult
+from vhost_cve_monitor.models import StackScanResult, VhostConfig
 
 
 class ScannerAdminTestCase(unittest.TestCase):
+    def test_redirects_are_not_coverage_failures_but_unknown_backends_are(self):
+        scanner = CerberusScanner(self.config, dry_run=True, allow_network=False)
+        redirect = VhostConfig("redirect.conf", server_names=["app.example.net"], returns=["308 https://app.example.net$request_uri"])
+        backend = VhostConfig("backend.conf", server_names=["app.example.net"], proxy_passes=["http://127.0.0.1:3002"])
+        with patch("vhost_cve_monitor.scanner.load_vhosts", return_value=[redirect, backend]), \
+             patch("vhost_cve_monitor.scanner.detect_stacks", return_value=[]), \
+             patch.object(scanner, "_build_failure_notifications", return_value=[]) as failures:
+            _, results, _, _ = scanner._collect_scan_data()
+        self.assertEqual(results[0].failures, [])
+        self.assertEqual(results[1].failures[0].reason, "stack_not_detected")
+        self.assertEqual(len(failures.call_args[0][0]), 1)
+
     def setUp(self) -> None:
         self.tmp = TemporaryDirectory()
         self.tmp_path = Path(self.tmp.name)

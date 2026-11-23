@@ -41,6 +41,11 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("sync-cve", help="Refresh cached advisories for known packages")
     subparsers.add_parser("validate-config", help="Validate the loaded configuration")
     subparsers.add_parser("doctor", help="Run local environment diagnostics")
+    history_parser = subparsers.add_parser("notification-history", help="Explain recorded notification decisions and delivery outcomes")
+    history_parser.add_argument("--vhost")
+    history_parser.add_argument("--advisory", help="Advisory ID or a known alias")
+    history_parser.add_argument("--scan-id")
+    history_parser.add_argument("--limit", type=int, default=100)
     subparsers.add_parser("list-vhosts", help="List parsed nginx vhosts with filter and stack context")
     explain_parser = subparsers.add_parser("explain-vhost", help="Explain how Cerberus sees a given vhost")
     explain_parser.add_argument("name", help="Vhost name or fnmatch pattern to explain")
@@ -94,6 +99,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     scanner = CerberusScanner(config, dry_run=args.dry_run, allow_network=not args.offline)
 
     try:
+        if args.command == "notification-history":
+            if not 1 <= args.limit <= 10000:
+                parser.error("--limit must be between 1 and 10000")
+            _emit_json(scanner.state.notification_history(args.limit, args.vhost, args.advisory, args.scan_id))
+            return 0
         if args.command == "scan-once":
             results, notifications = scanner.scan_once(
                 only_vhosts=args.only_vhost,
@@ -105,6 +115,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                     "notifications": len(notifications),
                     "only_vhost": args.only_vhost or [],
                     "force_notify": args.force_notify,
+                    "scan_id": scanner.state.scan_id,
                 }
             )
             return 0

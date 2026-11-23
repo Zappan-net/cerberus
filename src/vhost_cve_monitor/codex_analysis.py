@@ -6,16 +6,18 @@ import logging
 import os
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
 from .advisory_logic import SEVERITY_ORDER, normalize_severity
 from .subprocess_utils import command_exists
+from .systemd_codex import codex_home_path
 
 LOGGER = logging.getLogger(__name__)
 
-PROMPT_VERSION = "cerberus-codex-analysis-v1"
-SCHEMA_VERSION = "cerberus-codex-analysis-schema-v1"
+PROMPT_VERSION = "cerberus-codex-analysis-v4"
+SCHEMA_VERSION = "cerberus-codex-analysis-schema-v3"
 
 VALID_STATUSES = {
     "completed",
@@ -32,16 +34,64 @@ VALID_STATUSES = {
 VALID_COMPONENT_STATUS = {"present", "not_found", "unknown"}
 VALID_DEPENDENCY_SCOPE = {"runtime", "development", "build-time", "unknown"}
 VALID_RISK = {"CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO", "UNKNOWN"}
+VALID_EXPOSURE = {
+    "unauthenticated_remote",
+    "authenticated_remote",
+    "local_only",
+    "internal_only",
+    "build_time_only",
+    "not_observed",
+    "unknown",
+}
+VALID_IMPACT = {
+    "remote_code_execution",
+    "data_exposure",
+    "privilege_escalation",
+    "denial_of_service",
+    "integrity_bypass",
+    "ssrf",
+    "supply_chain",
+    "local_impact",
+    "none_observed",
+    "unknown",
+}
+VALID_PRIORITY = {"emergency", "urgent", "scheduled", "monitor", "unknown"}
 VALID_REACHABILITY = {"reachable", "not_observed", "not_reachable", "unknown"}
 VALID_RECOMMENDATION_TYPES = {"upgrade", "mitigation", "investigate", "monitor", "other"}
 
 DEFAULT_PROMPT = """You are a defensive vulnerability analyst performing static analysis.
 
 Analyse the provided Cerberus finding and the current source repository.
+For runtime findings, use runtime_context as inventory evidence, not proof of
+public reachability. A configured or listening backend may be blocked upstream.
+Do not treat a distributor package version as an unpatched upstream version.
+Do not execute the interpreter or read host configuration/credentials to fill gaps.
 
 Determine whether the affected component is present, how it is used, whether the vulnerable code path appears reachable,
 whether attacker-controlled data can reach it, the exploitation prerequisites, the likely impact, and the effective
 contextual risk.
+
+Produce an operator-facing verdict. Be explicit about the real-world exposure in this repository:
+- unauthenticated remote risk;
+- authenticated remote risk;
+- internal-only or local-only risk;
+- build-time/development-only risk;
+- no observed reachable path;
+- unknown when evidence is insufficient.
+
+Classify the likely impact using concrete terms such as remote code execution, data exposure, privilege escalation,
+denial of service, integrity bypass, SSRF, supply-chain/build-time risk, local-only impact, or unknown.
+
+Give a concise one-line operator summary that an administrator can act on. Examples:
+- "Critical unauthenticated remote code execution risk: public route passes attacker-controlled input to the vulnerable parser."
+- "Local-only denial-of-service risk: exploitation requires shell access or trusted local input."
+- "Build-time maintenance risk: vulnerable package is only observed in the development dependency tree."
+- "No reachable path observed: vulnerable package is installed, but no attacker-controlled use was found."
+
+Write the report in concrete human language. State where the vulnerable component appears, whether the current
+application exposes it to local users, authenticated users, unauthenticated remote users, build pipelines, or not at all,
+and what the operator should do next. Do not answer with generic boilerplate when repository evidence supports a more
+specific conclusion.
 
 Do not modify any file.
 Do not repair the vulnerability.
@@ -59,6 +109,17 @@ assumptions, uncertainty, and missing information.
 Return only JSON conforming to the supplied schema.
 """
 
+LANGUAGE_INSTRUCTIONS = {
+    "en": (
+        "Write all human-facing narrative fields in English. Keep JSON keys and enum values exactly as required "
+        "by the schema."
+    ),
+    "fr": (
+        "Rédige tous les champs narratifs destinés à un humain en français clair et opérationnel. Garde les clés "
+        "JSON et les valeurs d'énumération exactement comme le schéma les exige."
+    ),
+}
+
 OUTPUT_SCHEMA: Dict[str, Any] = {
     "type": "object",
     "additionalProperties": False,
@@ -69,6 +130,12 @@ OUTPUT_SCHEMA: Dict[str, Any] = {
         "dependency_path",
         "advisory_severity",
         "contextual_risk",
+        "exposure",
+        "impact",
+        "action_priority",
+        "operator_summary",
+        "environment_assessment",
+        "risk_rationale",
         "confidence",
         "reachability",
         "exploitation_prerequisites",
@@ -85,6 +152,12 @@ OUTPUT_SCHEMA: Dict[str, Any] = {
         "dependency_path": {"type": "array", "items": {"type": "string"}},
         "advisory_severity": {"type": "string", "enum": sorted(list(VALID_RISK) + ["WARNING"])},
         "contextual_risk": {"type": "string", "enum": sorted(VALID_RISK)},
+        "exposure": {"type": "string", "enum": sorted(VALID_EXPOSURE)},
+        "impact": {"type": "string", "enum": sorted(VALID_IMPACT)},
+        "action_priority": {"type": "string", "enum": sorted(VALID_PRIORITY)},
+        "operator_summary": {"type": "string"},
+        "environment_assessment": {"type": "string"},
+        "risk_rationale": {"type": "string"},
         "confidence": {"type": "number", "minimum": 0, "maximum": 1},
         "reachability": {
             "type": "object",
@@ -164,63 +237,110 @@ class CodexAnalysisRunner:
         if not self._executable_available(executable):
             return {"analysis_status": "unavailable", "reason": "Codex executable not found"}
 
+        try:
+            environment = self._sanitized_env()
+            with tempfile.TemporaryFile(dir=environment["CODEX_HOME"]):
+                pass
+        except OSError:
+            reason = "Codex home is not writable; rerun the Cerberus installer to refresh its systemd drop-in"
+            LOGGER.warning(reason)
+            return {"analysis_status": "unavailable", "reason": reason}
+
         prompt = self._prompt(finding)
         timeout = int(self.settings.get("timeout_seconds", 180))
+        retry_attempts = int(self.settings.get("retry_attempts", 1))
+        retry_delay = int(self.settings.get("retry_delay_seconds", 10))
         max_output = int(self.settings.get("maximum_output_bytes", 65536))
         self.used_this_run += 1
-        with tempfile.TemporaryDirectory(prefix="cerberus-codex-") as tmp:
-            schema_path = Path(tmp) / "schema.json"
-            result_path = Path(tmp) / "result.json"
-            schema_path.write_text(json.dumps(OUTPUT_SCHEMA, sort_keys=True), encoding="utf-8")
-            command = self._command(executable, schema_path, result_path, prompt)
-            LOGGER.info(
-                "Starting Codex static analysis for %s (cwd=%s, timeout=%ss)",
-                self._finding_label(finding),
-                repository,
-                timeout,
-            )
-            try:
-                completed = subprocess.run(
-                    command,
-                    cwd=str(repository),
-                    env=self._sanitized_env(),
-                    capture_output=True,
-                    text=True,
+        total_attempts = max(0, retry_attempts) + 1
+        for attempt in range(1, total_attempts + 1):
+            with tempfile.TemporaryDirectory(prefix="cerberus-codex-") as tmp:
+                schema_path = Path(tmp) / "schema.json"
+                result_path = Path(tmp) / "result.json"
+                schema_path.write_text(json.dumps(OUTPUT_SCHEMA, sort_keys=True), encoding="utf-8")
+                command = self._command(executable, schema_path, result_path, prompt)
+                LOGGER.info(
+                    "Starting Codex static analysis for %s (cwd=%s, timeout=%ss, attempt=%s/%s)",
+                    self._finding_label(finding),
+                    repository,
+                    timeout,
+                    attempt,
+                    total_attempts,
+                )
+                result = self._run_codex_attempt(
+                    command=command,
+                    repository=repository,
+                    result_path=result_path,
                     timeout=timeout,
-                    check=False,
-                    shell=False,
+                    max_output=max_output,
+                    expected_severity=normalize_severity(str(finding.get("severity") or "UNKNOWN")),
                 )
-            except subprocess.TimeoutExpired:
-                return self._cache(cache_key, {"analysis_status": "timed_out", "reason": "Codex execution timed out"})
-            except OSError as exc:
-                return self._cache(cache_key, {"analysis_status": "unavailable", "reason": str(exc)})
-            if completed.returncode != 0:
-                return self._cache(
-                    cache_key,
-                    {
-                        "analysis_status": "non_zero_exit",
-                        "reason": "Codex exited with status {}".format(completed.returncode),
-                    },
-                )
-            raw = self._read_result(result_path, completed.stdout, max_output)
-            if raw is None:
-                return self._cache(cache_key, {"analysis_status": "oversized_output", "reason": "Codex output too large"})
-            try:
-                payload = json.loads(raw)
-            except json.JSONDecodeError:
-                return self._cache(cache_key, {"analysis_status": "invalid_output", "reason": "Codex did not return JSON"})
-            errors = validate_analysis_result(payload, expected_severity=normalize_severity(str(finding.get("severity") or "UNKNOWN")))
-            if errors:
-                LOGGER.warning("Codex analysis schema validation failed for %s: %s", self._finding_label(finding), "; ".join(errors))
-                return self._cache(
-                    cache_key,
-                    {
-                        "analysis_status": "schema_invalid",
-                        "reason": "Codex output failed validation",
-                    },
-                )
-            LOGGER.info("Codex analysis completed for %s", self._finding_label(finding))
-            return self._cache(cache_key, payload)
+            if result.get("analysis_status") in {"completed", "insufficient_context"}:
+                LOGGER.info("Codex analysis completed for %s", self._finding_label(finding))
+                return self._cache(cache_key, result)
+            if attempt >= total_attempts or not self._retryable_status(str(result.get("analysis_status") or "")):
+                LOGGER.warning("Codex analysis ended with status %s", result.get("analysis_status"))
+                return self._cache(cache_key, result)
+            LOGGER.warning(
+                "Codex analysis failed for %s with status %s; retrying in %ss (%s/%s)",
+                self._finding_label(finding),
+                result.get("analysis_status"),
+                retry_delay,
+                attempt,
+                total_attempts,
+            )
+            if retry_delay > 0:
+                time.sleep(retry_delay)
+        return self._cache(cache_key, {"analysis_status": "unavailable", "reason": "Codex retry loop ended unexpectedly"})
+
+    def _run_codex_attempt(
+        self,
+        command: List[str],
+        repository: Path,
+        result_path: Path,
+        timeout: int,
+        max_output: int,
+        expected_severity: str,
+    ) -> Dict[str, Any]:
+        try:
+            completed = subprocess.run(
+                command,
+                cwd=str(repository),
+                env=self._sanitized_env(),
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                check=False,
+                shell=False,
+            )
+        except subprocess.TimeoutExpired:
+            return {"analysis_status": "timed_out", "reason": "Codex execution timed out"}
+        except OSError as exc:
+            return {"analysis_status": "unavailable", "reason": str(exc)}
+        if completed.returncode != 0:
+            return {
+                "analysis_status": "non_zero_exit",
+                "reason": self._process_failure_reason(completed),
+            }
+        raw = self._read_result(result_path, completed.stdout, max_output)
+        if raw is None:
+            return {"analysis_status": "oversized_output", "reason": "Codex output too large"}
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError:
+            return {"analysis_status": "invalid_output", "reason": "Codex did not return JSON"}
+        errors = validate_analysis_result(payload, expected_severity=expected_severity)
+        if errors:
+            LOGGER.warning("Codex analysis schema validation failed: %s", "; ".join(errors))
+            return {
+                "analysis_status": "schema_invalid",
+                "reason": "Codex output failed validation: {}".format("; ".join(errors[:5])),
+            }
+        return payload
+
+    @staticmethod
+    def _retryable_status(status: str) -> bool:
+        return status in {"timed_out", "unavailable", "non_zero_exit", "invalid_output", "schema_invalid"}
 
     def _cache(self, cache_key: str, result: Dict[str, Any]) -> Dict[str, Any]:
         status = str(result.get("analysis_status") or "")
@@ -235,7 +355,10 @@ class CodexAnalysisRunner:
 
     def _repository_for_finding(self, finding: Dict[str, Any]) -> Optional[Path]:
         configured = str(self.settings.get("repository_path") or "").strip()
-        raw_source = str(finding.get("source_path") or "").strip()
+        runtime = finding.get("runtime_context") or {}
+        raw_source = str(runtime.get("repository_path") or finding.get("source_path") or "").strip()
+        if runtime and not runtime.get("repository_path"):
+            return None
         if configured:
             repo = Path(configured).expanduser().resolve()
             if not repo.is_dir():
@@ -270,10 +393,14 @@ class CodexAnalysisRunner:
             "schema_version": SCHEMA_VERSION,
             "repository": str(repository),
             "source_hash": source_hash,
+            "fixed_version": finding.get("fixed_version"),
+            "fix_status": (finding.get("fix_details") or {}).get("status"),
             "advisory_id": finding.get("advisory_id") or finding.get("vuln_id"),
             "dependency": finding.get("dependency"),
             "version": finding.get("version"),
+            "severity": normalize_severity(str(finding.get("severity") or "UNKNOWN")),
             "source_path": finding.get("source_path"),
+            "runtime_context": finding.get("runtime_context", {}),
         }
         return hashlib.sha256(json.dumps(raw, sort_keys=True).encode("utf-8")).hexdigest()
 
@@ -287,6 +414,10 @@ class CodexAnalysisRunner:
             "--sandbox",
             str(self.settings.get("sandbox") or "read-only"),
         ]
+        if bool(self.settings.get("ignore_user_config", True)):
+            command.append("--ignore-user-config")
+        if bool(self.settings.get("skip_git_repo_check", True)):
+            command.append("--skip-git-repo-check")
         model = str(self.settings.get("model") or "").strip()
         if model:
             command.extend(["--model", model])
@@ -295,20 +426,24 @@ class CodexAnalysisRunner:
 
     def _prompt(self, finding: Dict[str, Any]) -> str:
         template = str(self.settings.get("prompt_template") or "").strip() or DEFAULT_PROMPT
+        language = self._language()
         prompt_payload = {
             "analysis_policy": {
                 "network_access": bool(self.settings.get("network_access", False)),
                 "sandbox": str(self.settings.get("sandbox") or "read-only"),
                 "source_execution_allowed": False,
                 "automatic_remediation_allowed": False,
+                "response_language": language,
             },
             "finding": {
                 "advisory_id": finding.get("advisory_id") or finding.get("vuln_id"),
                 "advisory_severity": normalize_severity(str(finding.get("severity") or "UNKNOWN")),
                 "advisory_summary": finding.get("advisory_summary"),
+                "runtime_context": finding.get("runtime_context", {}),
                 "dependency": finding.get("dependency"),
                 "installed_version": finding.get("version"),
                 "fixed_version": finding.get("fixed_version"),
+                "fix_details": finding.get("fix_details", {}),
                 "affected_range": finding.get("affected_range"),
                 "ecosystem": finding.get("ecosystem"),
                 "stack": finding.get("stack"),
@@ -318,10 +453,17 @@ class CodexAnalysisRunner:
                 "affected_targets": finding.get("affected_targets") or [finding.get("vhost")],
             },
         }
-        return "{}\n\nStructured Cerberus finding:\n{}".format(
+        return "{}\n\nLanguage requirement:\n{}\n\nStructured Cerberus finding:\n{}".format(
             template,
+            LANGUAGE_INSTRUCTIONS[language],
             json.dumps(prompt_payload, indent=2, sort_keys=True),
         )
+
+    def _language(self) -> str:
+        language = str(self.settings.get("language") or "en").strip().lower()
+        if language not in LANGUAGE_INSTRUCTIONS:
+            return "en"
+        return language
 
     def _read_result(self, result_path: Path, stdout: str, max_output: int) -> Optional[str]:
         if result_path.exists():
@@ -333,21 +475,48 @@ class CodexAnalysisRunner:
             return None
         return stdout
 
+    @staticmethod
+    def _process_failure_reason(completed: subprocess.CompletedProcess) -> str:
+        base = "Codex exited with status {}".format(completed.returncode)
+        text = "\n".join([str(completed.stderr or ""), str(completed.stdout or "")])
+        interesting = []
+        markers = (
+            "error",
+            "failed",
+            "denied",
+            "unauthorized",
+            "forbidden",
+            "rate limit",
+            "timed out",
+            "timeout",
+            "invalid",
+            "schema",
+            "permission",
+            "not found",
+        )
+        for raw_line in text.splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("{") or line in {"user", "codex"}:
+                continue
+            lowered = line.lower()
+            if any(marker in lowered for marker in markers):
+                interesting.append(line)
+        if not interesting:
+            return base
+        excerpt = " | ".join(interesting[-3:])
+        if len(excerpt) > 700:
+            excerpt = excerpt[:697] + "..."
+        return "{}: {}".format(base, excerpt)
+
     def _sanitized_env(self) -> Dict[str, str]:
         allowed = {}
         for key in ("PATH", "LANG", "LC_ALL", "TZ"):
             value = os.environ.get(key)
             if value:
                 allowed[key] = value
-        codex_home = str(self.settings.get("codex_home") or "").strip()
-        if not codex_home:
-            state = self.config.get("state") or {}
-            state_dir = str(state.get("state_dir") or "").strip()
-            if state_dir:
-                codex_home = str(Path(state_dir) / "codex")
-        if codex_home:
-            Path(codex_home).mkdir(parents=True, exist_ok=True)
-            allowed["CODEX_HOME"] = codex_home
+        codex_home = codex_home_path(self.config)
+        codex_home.mkdir(parents=True, exist_ok=True, mode=0o700)
+        allowed["CODEX_HOME"] = str(codex_home)
         allowed["TERM"] = "dumb"
         allowed["NO_COLOR"] = "1"
         allowed["CERBERUS_CODEX_NETWORK_ACCESS"] = "1" if self.settings.get("network_access") else "0"
@@ -381,6 +550,9 @@ def validate_analysis_result(payload: Any, expected_severity: str) -> List[str]:
     _require_enum(payload, "component_status", VALID_COMPONENT_STATUS, errors)
     _require_enum(payload, "dependency_scope", VALID_DEPENDENCY_SCOPE, errors)
     _require_enum(payload, "contextual_risk", VALID_RISK, errors)
+    _require_enum(payload, "exposure", VALID_EXPOSURE, errors)
+    _require_enum(payload, "impact", VALID_IMPACT, errors)
+    _require_enum(payload, "action_priority", VALID_PRIORITY, errors)
     advisory_severity = normalize_severity(str(payload.get("advisory_severity") or "UNKNOWN"))
     if advisory_severity != expected_severity:
         errors.append("advisory_severity must preserve scanner severity {}".format(expected_severity))
@@ -390,7 +562,7 @@ def validate_analysis_result(payload: Any, expected_severity: str) -> List[str]:
     _require_string_list(payload, "dependency_path", errors)
     _require_string_list(payload, "exploitation_prerequisites", errors)
     _require_string_list(payload, "limitations", errors)
-    for key in ("likely_impact", "summary"):
+    for key in ("likely_impact", "summary", "operator_summary", "environment_assessment", "risk_rationale"):
         if not isinstance(payload.get(key), str) or not payload.get(key).strip():
             errors.append("{} must be a non-empty string".format(key))
     reachability = payload.get("reachability")

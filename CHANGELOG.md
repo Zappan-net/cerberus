@@ -4,6 +4,14 @@
 
 ### Added
 
+- CPython runtime coverage from PSF advisories via OSV release-commit queries, with version-keyed offline cache, CVE alias correlation and available CVSS severity; Git-only fix commits are not presented as Python release versions.
+- Runtime CVE inventory for local PHP-FPM, Node.js and Python backends, independently of application manifests; explicit bindings support stopped backends. Debian source revisions/backports take precedence over upstream version matches.
+- Bounded official repository advisory caching, explicit provisional distributor assessments and coverage warnings; runtime inventory is preserved in text/HTML mail, JSON exports and optional Codex context. Codex remains disabled by default.
+- Additive SQLite runtime cache and current-findings context migration without rewriting notification history.
+
+- Package-scoped fixed-version enrichment from OSV and the official GitHub advisory API, with alias-aware bounded caching, collection provenance and explicit incomplete/error/conflict states in email, export and AI context.
+
+- Append-only SQLite notification journal and `notification-history` CLI, with per-scan/per-vhost before/after decisions and separate delivery outcomes; no historical backfill.
 - Normalized finding correlation that merges duplicate advisories across audit-tool and local-cache stages before rendering notifications.
 - Stack-aware remediation recommendations for npm, Composer, PyPI, and Go findings.
 - Fixed-version and affected-range rendering in alert emails and digests when advisory data provides it.
@@ -16,6 +24,15 @@
 
 ### Changed
 
+- Stop reporting redirect-only nginx blocks as missing stacks. Skip inapplicable npm dependency audits for dependency-free standalone projects and distinguish missing audit prerequisites from failed commands.
+
+- Resolve local proxy projects behind private bind mounts using verified host filesystem mappings, without weakening service isolation. Render stack discovery failures as coverage diagnostics rather than dependency vulnerabilities.
+
+- Stop treating npm package-level `fixAvailable` as per-advisory evidence or inclusive affected bounds as patched versions. Preserve confirmed fixes on transient source failures and journal repair enrichment without resending metadata-only alerts.
+
+- npm advisory severity now takes precedence over package aggregate severity. Dry-run decisions no longer consume real alerts, and the installer verifies source/venv parity after installation.
+- Alert deduplication now correlates explicit advisory aliases across identifier changes, ignores metadata-only changes, and preserves new-target and severity notifications. Batch normalization merges late alias bridges before per-vhost projection; existing SQLite history remains usable without a reset.
+- Source and Debian installers now maintain a systemd write exception limited to the configured Codex state directory, preserving read-only source protections across reinstalls. Unwritable Codex state is detected before execution instead of repeatedly failing app-server initialization.
 - Digest subjects are shorter and operationally focused, for example `[Cerberus][MEDIUM][domain.tld] 2 alerts`.
 - npm scanning now runs both production/runtime audit scope and full audit scope, keeping development/build-only findings visible without inflating the primary runtime digest severity.
 - Digest rendering now groups identical findings by evidence path, package, installed version, advisory, and audit scope, while listing all affected targets in one block.

@@ -1,3 +1,11 @@
+cerberus (0.1.3) unstable; urgency=medium
+
+  * Audit backend runtimes and correlate upstream and distribution advisories.
+  * Track repair evidence and notification decisions across scans.
+  * Timestamp outgoing alert subjects to distinguish successive digests.
+
+ -- Cerberus Maintainers <maintainers@example.net>  Mon, 23 Nov 2026 09:00:00 +0100
+
 cerberus (0.1.2) unstable; urgency=medium
 
   * Add optional Codex CLI vulnerability analysis enrichment.

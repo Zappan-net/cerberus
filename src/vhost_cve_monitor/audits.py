@@ -8,9 +8,11 @@ from typing import Dict, List
 
 from .advisory_logic import (
     STANDARD_VULN_RE,
+    advisory_ids_from_fields,
     canonical_advisory_id,
     format_fixed_versions,
     infer_first_safe_from_range,
+    normalize_severity,
     strongest_severity,
 )
 from .collectors import (
@@ -65,6 +67,22 @@ def scan_stack(
     )
 
 
+def _npm_dependency_audit_not_applicable(root: Path) -> bool:
+    """Only skip a readable, standalone manifest with no dependency tree declared."""
+    if any((root / name).exists() for name in (
+        "package-lock.json", "npm-shrinkwrap.json", "yarn.lock", "pnpm-lock.yaml", "node_modules"
+    )):
+        return False
+    try:
+        manifest = json.loads((root / "package.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return isinstance(manifest, dict) and not any(manifest.get(key) for key in (
+        "dependencies", "devDependencies", "optionalDependencies", "peerDependencies",
+        "bundledDependencies", "bundleDependencies", "workspaces",
+    ))
+
+
 def _scan_node(stack: StackMatch, cve_db: CVEDatabase, timeout: int, allow_network: bool) -> StackScanResult:
     LOGGER.info("Scanning Node.js stack at %s", stack.root_path or "unknown")
     dependencies, failures = collect_node_dependencies(stack)
@@ -97,9 +115,17 @@ def _scan_node(stack: StackMatch, cve_db: CVEDatabase, timeout: int, allow_netwo
                         issues.append(issue)
         else:
             failures.append(ScanFailure(scope="nodejs", reason="npm_full_audit_failed", detail=full_result.stderr.strip()))
+    elif root and not dependencies and _npm_dependency_audit_not_applicable(root):
+        LOGGER.info("npm dependency audit not applicable at %s: no dependencies declared; Node runtime is not audited", root)
     else:
-        LOGGER.info("Skipping npm audit for %s: npm missing or package-lock.json absent", stack.root_path or "unknown")
-        failures.append(ScanFailure(scope="nodejs", reason="npm_audit_unavailable", detail=stack.root_path))
+        missing = []
+        if not command_exists("npm"):
+            missing.append("npm executable not found in service PATH")
+        if not root or not (root / "package-lock.json").exists():
+            missing.append("package-lock.json absent")
+        detail = "; ".join(missing)
+        LOGGER.info("Skipping npm audit for %s: %s", stack.root_path or "unknown", detail)
+        failures.append(ScanFailure(scope="nodejs", reason="npm_audit_unavailable", detail=detail))
     return StackScanResult(
         stack=stack,
         dependencies=dependencies,
@@ -118,13 +144,15 @@ def _parse_npm_audit(payload: Dict, dependencies: List[Dependency], audit_scope:
         if not dependency:
             continue
         top_level_severity = str(vuln.get("severity", "UNKNOWN")).upper()
-        top_level_fix, fix_is_semver_major = _npm_fix_metadata(vuln.get("fixAvailable"))
+        _, fix_is_semver_major = _npm_fix_metadata(vuln.get("fixAvailable"))
         via_entries = vuln.get("via") or []
         for entry in via_entries:
             if not isinstance(entry, dict):
                 continue
             vuln_id = _normalize_npm_vuln_id(entry, package_name)
-            severity = strongest_severity(entry.get("severity"), top_level_severity)
+            severity = normalize_severity(entry.get("severity"))
+            if severity == "UNKNOWN":
+                severity = normalize_severity(top_level_severity)
             affected_range = str(entry.get("range") or vuln.get("range") or "").strip() or None
             issues.append(
                 AuditIssue(
@@ -136,7 +164,9 @@ def _parse_npm_audit(payload: Dict, dependencies: List[Dependency], audit_scope:
                         severity=severity,
                         summary=str(entry.get("title", "npm audit finding")),
                         details=str(entry.get("url", "")),
-                        fixed_version=top_level_fix or infer_first_safe_from_range(affected_range),
+                        # fixAvailable can name a parent, not the affected package.
+                        # Resolve per-advisory repair metadata from structured sources.
+                        fixed_version=None,
                         affected_range=affected_range,
                         audit_scope=audit_scope,
                         fix_is_semver_major=fix_is_semver_major,
@@ -264,7 +294,12 @@ def _scan_python(stack: StackMatch, cve_db: CVEDatabase, timeout: int, allow_net
             failures.append(ScanFailure(scope="python", reason="pip_audit_failed", detail=result.stderr.strip()))
     else:
         LOGGER.info("Skipping pip-audit for %s: pip-audit missing or requirements.txt absent", stack.root_path or "unknown")
-        failures.append(ScanFailure(scope="python", reason="pip_audit_unavailable", detail=stack.root_path))
+        missing = []
+        if not command_exists("pip-audit"):
+            missing.append("pip-audit executable not found in service PATH")
+        if not requirements_path or not requirements_path.exists():
+            missing.append("requirements.txt absent")
+        failures.append(ScanFailure(scope="python", reason="pip_audit_unavailable", detail="; ".join(missing)))
     return StackScanResult(
         stack=stack,
         dependencies=dependencies,
@@ -350,19 +385,50 @@ def _build_runtime_vulnerability(
 
 
 def _dedupe_issues(issues: List[AuditIssue]) -> List[AuditIssue]:
-    deduped = {}
+    deduped: List[AuditIssue] = []
     for issue in issues:
-        canonical_id = canonical_advisory_id(issue.vulnerability.vuln_id, issue.vulnerability.aliases)
-        key = (
-            issue.dependency.name.lower(),
-            issue.dependency.version,
-            canonical_id,
-            issue.dependency.source,
+        issue_ids = set(
+            advisory_ids_from_fields(
+                issue.vulnerability.vuln_id,
+                issue.vulnerability.aliases,
+                issue.vulnerability.references,
+            )
         )
-        if key not in deduped:
-            deduped[key] = issue
+        existing = None
+        for candidate in deduped:
+            candidate_ids = set(
+                advisory_ids_from_fields(
+                    candidate.vulnerability.vuln_id,
+                    candidate.vulnerability.aliases,
+                    candidate.vulnerability.references,
+                )
+            )
+            if (
+                candidate.dependency.name.lower() == issue.dependency.name.lower()
+                and candidate.dependency.version == issue.dependency.version
+                and candidate.dependency.source == issue.dependency.source
+                and candidate_ids.intersection(issue_ids)
+            ):
+                existing = candidate
+                break
+        canonical_id = canonical_advisory_id(
+            issue.vulnerability.vuln_id,
+            issue.vulnerability.aliases,
+            issue.vulnerability.references,
+        )
+        issue_ids.add(canonical_id)
+        if existing is None:
+            issue.vulnerability.vuln_id = canonical_id
+            for alias in issue_ids:
+                if alias and alias != canonical_id and alias not in issue.vulnerability.aliases:
+                    issue.vulnerability.aliases.append(alias)
+            deduped.append(issue)
             continue
-        existing = deduped[key]
+        existing.vulnerability.vuln_id = canonical_advisory_id(
+            existing.vulnerability.vuln_id,
+            existing.vulnerability.aliases + issue.vulnerability.aliases,
+            existing.vulnerability.references + issue.vulnerability.references,
+        )
         existing.vulnerability.severity = strongest_severity(
             existing.vulnerability.severity,
             issue.vulnerability.severity,
@@ -391,10 +457,15 @@ def _dedupe_issues(issues: List[AuditIssue]) -> List[AuditIssue]:
         existing.vulnerability.affected_range = (
             existing.vulnerability.affected_range or issue.vulnerability.affected_range
         )
+        if not existing.vulnerability.fix_details:
+            existing.vulnerability.fix_details = issue.vulnerability.fix_details
         for alias in issue.vulnerability.aliases:
             if alias and alias not in existing.vulnerability.aliases:
+                existing.vulnerability.aliases.append(alias)
+        for alias in issue_ids:
+            if alias and alias != existing.vulnerability.vuln_id and alias not in existing.vulnerability.aliases:
                 existing.vulnerability.aliases.append(alias)
         for reference in issue.vulnerability.references:
             if reference and reference not in existing.vulnerability.references:
                 existing.vulnerability.references.append(reference)
-    return list(deduped.values())
+    return deduped

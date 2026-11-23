@@ -1,0 +1,11 @@
+{
+  "ghsa_id": "GHSA-prgh-xp8r-p3m5",
+  "cve_id": null,
+  "severity": "high",
+  "identifiers": [{"type": "GHSA", "value": "GHSA-prgh-xp8r-p3m5"}],
+  "vulnerabilities": [{
+    "package": {"ecosystem": "npm", "name": "nodemailer"},
+    "vulnerable_version_range": ">= 9.1.0, <= 10.0.4",
+    "first_patched_version": "10.0.5"
+  }]
+}

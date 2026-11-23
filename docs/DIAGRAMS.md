@@ -12,6 +12,7 @@ sequenceDiagram
     participant N as nginx_parser
     participant D as stack_detection
     participant A as audits/collectors
+    participant R as runtime_audit
     participant X as Codex CLI optional
     participant DB as SQLite cache/state
     participant M as Mailer/Postfix
@@ -24,6 +25,11 @@ sequenceDiagram
     loop for each vhost
         SC->>D: detect stacks and roots
         D-->>SC: StackMatch[]
+        opt runtime_audit.enabled
+            SC->>R: identify backend interpreter or explicit binding
+            R->>DB: official runtime advisories / distributor backports
+            R-->>SC: runtime issues, provenance and coverage diagnostics
+        end
         loop for each stack
             SC->>A: collect dependencies and scoped native audit results
             A->>DB: lookup cached advisories / refresh if needed
@@ -57,7 +63,10 @@ flowchart TD
     E --> F[collectors]
     F --> G[Dependency inventory]
     G --> H[audits]
-    H --> I[Runtime audit findings]
+    H --> I[Dependency audit findings]
+    C --> RA[Runtime inventory: PHP / Node.js / Python]
+    RA --> RC[Official advisories and distributor backport checks]
+    RC --> M
     G --> J[CVEDatabase]
     J --> K[Local SQLite advisory cache]
     K --> L[Correlated vulnerabilities]

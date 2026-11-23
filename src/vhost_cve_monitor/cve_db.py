@@ -11,6 +11,7 @@ from typing import List
 
 from .advisory_logic import format_fixed_versions, merge_fixed_versions, severity_from_cvss, strongest_severity
 from .models import Dependency, Vulnerability
+from .fixed_versions import FixedVersionResolver, osv_records
 
 LOGGER = logging.getLogger(__name__)
 
@@ -57,6 +58,7 @@ class CVEDatabase:
         self.network_timeout_seconds = network_timeout_seconds
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._initialize()
+        self.repairs = FixedVersionResolver(self)
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.db_path)
@@ -100,6 +102,7 @@ class CVEDatabase:
             )
             self._ensure_column(connection, "advisories", "fixed_version", "TEXT")
             self._ensure_column(connection, "advisories", "affected_range", "TEXT")
+            self._ensure_column(connection, "package_findings", "repair_json", "TEXT")
 
     @staticmethod
     def _ensure_column(connection: sqlite3.Connection, table: str, column: str, column_type: str) -> None:
@@ -146,7 +149,7 @@ class CVEDatabase:
                 dependency.version,
                 dependency.ecosystem,
             )
-            return advisories
+            return self.lookup(dependency)
         except Exception as exc:  # noqa: BLE001
             LOGGER.warning("Unable to refresh OSV advisories for %s: %s", dependency.name, exc)
             return cached
@@ -170,7 +173,7 @@ class CVEDatabase:
         with self._connect() as connection:
             rows = connection.execute(
                 """
-                SELECT a.*
+                SELECT a.*, pf.repair_json
                 FROM advisories a
                 JOIN package_findings pf ON pf.vuln_id = a.vuln_id
                 WHERE pf.ecosystem = ? AND pf.package_name = ? AND pf.version = ?
@@ -180,6 +183,11 @@ class CVEDatabase:
             ).fetchall()
         vulnerabilities = []
         for row in rows:
+            repair = json.loads(row["repair_json"] or "{}")
+            # Legacy global advisory rows could belong to another affected package.
+            legacy = json.loads(row["raw_json"] or "{}")
+            if not repair and (legacy.get("package_name"), legacy.get("ecosystem")) == (dependency.name, dependency.ecosystem):
+                repair = legacy
             vulnerabilities.append(
                 Vulnerability(
                     vuln_id=row["vuln_id"],
@@ -192,8 +200,9 @@ class CVEDatabase:
                     package_name=dependency.name,
                     ecosystem=dependency.ecosystem,
                     affected_version=dependency.version,
-                    fixed_version=row["fixed_version"],
-                    affected_range=row["affected_range"],
+                    fixed_version=repair.get("fixed_version"),
+                    affected_range=repair.get("affected_range"),
+                    fix_details=repair.get("fix_details", {}),
                     references=json.loads(row["references_json"]),
                     aliases=json.loads(row["aliases_json"]),
                 )
@@ -256,6 +265,8 @@ class CVEDatabase:
                     and affected_package.get("ecosystem") == dependency.ecosystem
                 ):
                     for current_range in affected.get("ranges", []):
+                        if current_range.get("type") not in ("SEMVER", "ECOSYSTEM"):
+                            continue
                         events = current_range.get("events", [])
                         fixed_versions.extend([entry.get("fixed") for entry in events if entry.get("fixed")])
                         if current_range.get("type") and current_range.get("events"):
@@ -292,6 +303,8 @@ class CVEDatabase:
                     ecosystem=dependency.ecosystem,
                     affected_version=dependency.version,
                     fixed_version=format_fixed_versions(fixed_versions),
+                    fix_details={"status": "confirmed" if fixed_versions else "incomplete",
+                                 "records": osv_records(item, dependency, datetime.now(timezone.utc).isoformat())},
                     affected_range=" | ".join(affected_ranges) if affected_ranges else None,
                     references=references,
                     aliases=item.get("aliases", []),
@@ -302,6 +315,9 @@ class CVEDatabase:
     def _store_query_result(self, dependency: Dependency, advisories: List[Vulnerability]) -> None:
         fetched_at = datetime.now(timezone.utc).isoformat()
         with self._connect() as connection:
+            prior_repairs = {row["vuln_id"]: row["repair_json"] for row in connection.execute(
+                "SELECT vuln_id, repair_json FROM package_findings WHERE ecosystem=? AND package_name=? AND repair_json IS NOT NULL",
+                (dependency.ecosystem, dependency.name))}
             connection.execute(
                 """
                 INSERT INTO package_queries (ecosystem, package_name, version, fetched_at)
@@ -319,6 +335,12 @@ class CVEDatabase:
                 (dependency.ecosystem, dependency.name, dependency.version),
             )
             for advisory in advisories:
+                # Repair metadata belongs to this package, never the global ID row.
+                prior = prior_repairs.get(advisory.vuln_id)
+                if prior and not advisory.fixed_version:
+                    repair = json.loads(prior)
+                    advisory.fixed_version = repair.get("fixed_version")
+                    advisory.fix_details = repair.get("fix_details", {})
                 existing = connection.execute(
                     "SELECT severity, fixed_version, affected_range, aliases_json, references_json FROM advisories WHERE vuln_id = ?",
                     (advisory.vuln_id,),
@@ -372,8 +394,8 @@ class CVEDatabase:
                 )
                 connection.execute(
                     """
-                    INSERT INTO package_findings (ecosystem, package_name, version, vuln_id, fetched_at)
-                    VALUES (?, ?, ?, ?, ?)
+                    INSERT INTO package_findings (ecosystem, package_name, version, vuln_id, fetched_at, repair_json)
+                    VALUES (?, ?, ?, ?, ?, ?)
                     """,
                     (
                         dependency.ecosystem,
@@ -381,5 +403,7 @@ class CVEDatabase:
                         dependency.version,
                         advisory.vuln_id,
                         fetched_at,
+                        json.dumps({"fixed_version": advisory.fixed_version, "affected_range": advisory.affected_range,
+                                    "fix_details": advisory.fix_details}),
                     ),
                 )

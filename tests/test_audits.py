@@ -1,4 +1,5 @@
 import os
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -8,6 +9,7 @@ from unittest.mock import patch
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(__file__)), "src"))
 
 from vhost_cve_monitor.audits import _scan_node
+from vhost_cve_monitor.audits import _npm_dependency_audit_not_applicable, _scan_python
 from vhost_cve_monitor.audits import _normalize_npm_vuln_id
 from vhost_cve_monitor.audits import _parse_composer_audit
 from vhost_cve_monitor.audits import _parse_npm_audit
@@ -17,6 +19,56 @@ from vhost_cve_monitor.subprocess_utils import CommandResult
 
 
 class AuditsTestCase(unittest.TestCase):
+    def test_dependency_free_node_project_does_not_warn_or_run_audit(self):
+        with TemporaryDirectory() as tmp:
+            (Path(tmp) / "package.json").write_text('{"name":"example-api","type":"module"}')
+            stack = StackMatch("nodejs", "high", [], tmp)
+            with patch("vhost_cve_monitor.audits._local_db_issues", return_value=[]), \
+                 patch("vhost_cve_monitor.audits.run_command") as run:
+                result = _scan_node(stack, None, 1, False)
+            self.assertEqual(result.failures, [])
+            run.assert_not_called()
+
+    def test_missing_lock_with_declared_dependencies_remains_a_warning(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for key in ("dependencies", "devDependencies", "optionalDependencies", "peerDependencies", "workspaces"):
+                (root / "package.json").write_text(json.dumps({key: {"example": "1.0.0"}}))
+                self.assertFalse(_npm_dependency_audit_not_applicable(root))
+            (root / "package.json").write_text('{"dependencies":{"example":"1.0.0"}}')
+            with patch("vhost_cve_monitor.audits._local_db_issues", return_value=[]), \
+                 patch("vhost_cve_monitor.audits.command_exists", return_value=True):
+                result = _scan_node(StackMatch("nodejs", "high", [], tmp), None, 1, False)
+            self.assertEqual(result.failures[0].reason, "npm_audit_unavailable")
+            self.assertIn("package-lock.json absent", result.failures[0].detail)
+
+    def test_unreadable_invalid_or_existing_dependency_tree_is_not_silenced(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.assertFalse(_npm_dependency_audit_not_applicable(root))
+            (root / "package.json").write_text("invalid")
+            self.assertFalse(_npm_dependency_audit_not_applicable(root))
+            (root / "package.json").write_text("{}")
+            (root / "node_modules").mkdir()
+            self.assertFalse(_npm_dependency_audit_not_applicable(root))
+
+    def test_missing_pip_audit_has_explicit_diagnostic(self):
+        with TemporaryDirectory() as tmp:
+            (Path(tmp) / "requirements.txt").write_text("")
+            with patch("vhost_cve_monitor.audits.collect_python_dependencies", return_value=([], [])), \
+                 patch("vhost_cve_monitor.audits.command_exists", return_value=False):
+                result = _scan_python(StackMatch("python", "high", [], tmp), None, 1, False)
+            self.assertEqual(result.failures[0].detail, "pip-audit executable not found in service PATH")
+
+    def test_npm_advisory_severity_overrides_package_aggregate(self):
+        dependencies = [Dependency("npm", "sample", "1.0", "/srv/app/package-lock.json", 1)]
+        entries = [{"source": advisory, "severity": "moderate"}
+                   for advisory in ("CVE-2026-102277", "CVE-2026-100699")]
+        entries += [{"source": "CVE-2026-11111"}, {"source": "CVE-2026-11112", "severity": "low"}]
+        payload = {"vulnerabilities": {"sample": {"severity": "high", "via": entries}}}
+        issues = _parse_npm_audit(payload, dependencies)
+        self.assertEqual([issue.vulnerability.severity for issue in issues], ["MEDIUM", "MEDIUM", "HIGH", "LOW"])
+
     def test_normalize_npm_vuln_id_prefers_standard_aliases(self) -> None:
         entry = {
             "source": 1115806,
@@ -120,7 +172,8 @@ class AuditsTestCase(unittest.TestCase):
         self.assertEqual(len(issues), 1)
         self.assertEqual(issues[0].vulnerability.audit_scope, "development")
         self.assertTrue(issues[0].vulnerability.fix_is_semver_major)
-        self.assertEqual(issues[0].vulnerability.fixed_version, ">= 5.0.0")
+        # npm fixAvailable can identify a parent package rather than this advisory's fix.
+        self.assertIsNone(issues[0].vulnerability.fixed_version)
 
     def test_scan_node_keeps_runtime_and_full_audit_findings_separate(self) -> None:
         with TemporaryDirectory() as tmp:

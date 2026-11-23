@@ -106,6 +106,17 @@ def _collect_server_block(
     visited: Set[Path],
 ) -> VhostConfig:
     vhost = VhostConfig(file_path=str(file_path))
+    def collect_php(nodes):
+        for node in nodes:
+            values = node["args"]
+            if node["name"] == "fastcgi_pass" and values:
+                if values[0] not in vhost.fastcgi_passes:
+                    vhost.fastcgi_passes.append(values[0])
+            if node["name"] == "fastcgi_param" and len(values) >= 2 and values[0] == "SCRIPT_FILENAME":
+                if values[1].startswith("/") and "$" not in values[1]:
+                    vhost.php_script_paths.append(values[1])
+            collect_php(node["children"])
+    collect_php(block["children"])
     for child in block["children"]:
         name = child["name"]
         args = child["args"]
@@ -133,7 +144,14 @@ def _collect_server_block(
         elif name == "location":
             location = NginxLocation(path=" ".join(args) or "/")
             for nested in child["children"]:
-                if nested["name"] == "include":
+                if nested["name"] == "return" and nested["args"] and args == ["/"]:
+                    # An unconditional catch-all response has no application to audit.
+                    # Other roots/upstreams still prevent classifying the whole vhost as redirect-only.
+                    vhost.returns.append(" ".join(nested["args"]))
+                elif nested["name"] == "root" and nested["args"]:
+                    if not args or not args[-1].startswith("/.well-known/acme-challenge/"):
+                        vhost.roots.append(nested["args"][0])
+                elif nested["name"] == "include":
                     location.includes.extend(nested["args"])
                 elif nested["name"] == "proxy_pass" and nested["args"]:
                     location.proxy_pass = nested["args"][0]
@@ -170,6 +188,7 @@ def _merge_include(
     pseudo_server = {"name": "server", "args": [], "children": directives}
     included = _collect_server_block(include_path, pseudo_server, include_depth, max_include_depth, visited)
     vhost.roots.extend([item for item in included.roots if item not in vhost.roots])
+    vhost.php_script_paths.extend(item for item in included.php_script_paths if item not in vhost.php_script_paths)
     vhost.includes.extend([item for item in included.includes if item not in vhost.includes])
     vhost.returns.extend([item for item in included.returns if item not in vhost.returns])
     vhost.proxy_passes.extend([item for item in included.proxy_passes if item not in vhost.proxy_passes])

@@ -89,6 +89,8 @@ if [ ! -f "$CONFIG_FILE" ]; then
     install -m 0644 "$EXAMPLE_CONFIG" "$CONFIG_FILE"
 fi
 
+"${VENV_DIR}/bin/python" -m vhost_cve_monitor.systemd_codex --config "$CONFIG_FILE"
+
 if command -v "$SYSTEMCTL" >/dev/null 2>&1; then
     "$SYSTEMCTL" daemon-reload || true
     "$SYSTEMCTL" enable --now vhost-cve-monitor.timer || true

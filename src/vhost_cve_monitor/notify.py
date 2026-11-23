@@ -7,12 +7,14 @@ import smtplib
 import socket
 import ssl
 import subprocess
+from datetime import datetime
 from email.policy import SMTP
 from html import escape
 from email.message import EmailMessage
 from typing import Dict, List
 
 from .models import NotificationEvent
+from .fixed_versions import fix_description
 
 LOGGER = logging.getLogger(__name__)
 
@@ -105,6 +107,11 @@ def _html_table_body(event: NotificationEvent, severity: str, color: str) -> str
     )
 
 
+def _html_runtime(context) -> str:
+    from .runtime_audit import runtime_description
+    return _html_value_row("Runtime inventory", escape(runtime_description(context))) if context else ""
+
+
 def _html_value_row(label: str, value: str) -> str:
     return (
         "<div style=\"display:grid;grid-template-columns:180px 1fr;gap:12px;padding:8px 0;border-bottom:1px solid #e5e7eb;\">"
@@ -137,10 +144,14 @@ def _html_vulnerability_body(event: NotificationEvent, severity: str, color: str
         _html_value_row("Audit scope", audit_scope),
         _html_value_row("Advisory", "<strong>{}</strong>".format(advisory_id)),
         _html_value_row("Summary", summary),
+        _html_value_row("Alert reason", escape(_alert_reason_label(str(metadata.get("alert_reason") or "new")))),
         _html_value_row("Evidence", "{}:{}".format(source_path, source_line)),
     ]
     if audit_scope == "development":
         content.append(_html_value_row("Note", "development/build finding absent from npm audit --omit=dev."))
+    content.append(_html_runtime(metadata.get("runtime_context")))
+    if metadata.get("fix_details"):
+        content.append(_html_value_row("Repair evidence", escape(fix_description(metadata["fix_details"]))))
     if metadata.get("fix_is_semver_major"):
         content.append(_html_value_row("Risk", "npm marks the available fix as semver-major; review breakage before applying it."))
     if isinstance(metadata.get("codex_analysis"), dict):
@@ -202,6 +213,22 @@ def _html_digest_body(event: NotificationEvent, severity: str, color: str) -> st
                     )
                 )
             for item in items:
+                if item.get("category") == "scan-failure":
+                    blocks.append("<div style=\"border:1px solid #e5e7eb;padding:12px;margin-bottom:12px;\">")
+                    for label, value in (
+                        ("Affected targets", ", ".join(item.get("affected_targets") or [item.get("vhost") or "unknown"])),
+                        ("Component", "stack discovery" if item.get("vuln_id") == "stack_not_detected" else "audit pipeline"),
+                        ("Reason", item.get("vuln_id")),
+                        ("Severity", level),
+                        ("Summary", item.get("advisory_summary")),
+                        ("Recommendation", item.get("recommendation")),
+                        ("Evidence", item.get("source_path")),
+                        ("Detail", item.get("detail")),
+                    ):
+                        if value:
+                            blocks.append(_html_value_row(label, escape(str(value))))
+                    blocks.append("</div>")
+                    continue
                 stack_context = " / ".join(
                     part
                     for part in [str(item.get("stack") or "").strip(), str(item.get("ecosystem") or "").strip()]
@@ -224,11 +251,15 @@ def _html_digest_body(event: NotificationEvent, severity: str, color: str) -> st
                         _html_value_row("Audit scope", escape(str(item.get("audit_scope") or "runtime"))),
                         _html_value_row("Advisory", "<strong>{}</strong>".format(escape(str(item.get("vuln_id") or "unknown")))),
                         _html_value_row("Summary", escape(str(item.get("advisory_summary") or "No summary provided by upstream advisory sources."))),
+                        _html_value_row("Alert reason", escape(_alert_reason_label(str(item.get("alert_reason") or "new")))),
                         _html_value_row("Evidence", evidence),
                     ]
                 )
                 if item.get("audit_scope") == "development":
                     blocks.append(_html_value_row("Note", "development/build finding absent from npm audit --omit=dev."))
+                blocks.append(_html_runtime(item.get("runtime_context")))
+                if item.get("fix_details"):
+                    blocks.append(_html_value_row("Repair evidence", escape(fix_description(item["fix_details"]))))
                 if item.get("fix_is_semver_major"):
                     blocks.append(_html_value_row("Risk", "npm marks the available fix as semver-major; review breakage before applying it."))
                 if isinstance(item.get("codex_analysis"), dict):
@@ -236,6 +267,16 @@ def _html_digest_body(event: NotificationEvent, severity: str, color: str) -> st
                 blocks.append("</div>")
             blocks.append("</div></div>")
     return _html_shell(event.subject, event.category.upper(), severity, color, "\n".join(blocks))
+
+
+def _alert_reason_label(reason: str) -> str:
+    labels = {
+        "new": "new finding",
+        "changed": "finding changed since the previous notification",
+        "progressive_enrichment": "progressive advisory enrichment since the previous notification",
+        "forced": "forced notification",
+    }
+    return labels.get(str(reason or ""), str(reason or "unknown"))
 
 
 def _html_digest_scope_sections(digest_items: List[Dict[str, object]]) -> List[tuple[str, List[Dict[str, object]]]]:
@@ -268,6 +309,10 @@ def _html_npm_scope_summary(digest_items: List[Dict[str, object]]) -> str:
 
 
 def _html_digest_block_recommendation(severity: str, items: List[Dict[str, object]]) -> str:
+    if items and all(item.get("category") == "scan-failure" for item in items):
+        return " ".join(dict.fromkeys(str(item["recommendation"]) for item in items if item.get("recommendation"))) or "restore scanner coverage and rerun the scan; these are scanner diagnostics, not dependency vulnerabilities."
+    if any((item.get("fix_details") or {}).get("status") == "conflicting" for item in items):
+        return "review conflicting repair sources and affected release branches before choosing an upgrade; validate application compatibility."
     ecosystems = {
         str(item.get("ecosystem") or "").lower()
         for item in items
@@ -323,6 +368,22 @@ def _html_digest_block_recommendation(severity: str, items: List[Dict[str, objec
 
 
 def _html_codex_analysis_block(analysis: Dict[str, object]) -> str:
+    status = str(analysis.get("analysis_status") or "unknown")
+    if status not in {"completed", "insufficient_context"}:
+        return "\n".join(
+            [
+                "<div style=\"margin-top:14px;border:1px solid #cbd5e1;border-radius:10px;padding:12px 14px;background:#f8fafc;\">",
+                "<div style=\"font-weight:700;color:#0f172a;margin-bottom:8px;\">Codex triage report</div>",
+                _html_value_row("Analysis type", "AI-assisted static analysis"),
+                _html_value_row("Analysis status", escape(status)),
+                _html_value_row(
+                    "Result",
+                    "Codex analysis was attempted, but no validated report was available.",
+                ),
+                _html_value_row("Diagnostic", escape(str(analysis.get("reason") or "no diagnostic detail available"))),
+                "</div>",
+            ]
+        )
     confidence = analysis.get("confidence")
     confidence_text = "unknown"
     if isinstance(confidence, (int, float)):
@@ -333,9 +394,15 @@ def _html_codex_analysis_block(analysis: Dict[str, object]) -> str:
     evidence = analysis.get("evidence") if isinstance(analysis.get("evidence"), list) else []
     rows = [
         "<div style=\"margin-top:14px;border:1px solid #cbd5e1;border-radius:10px;padding:12px 14px;background:#f8fafc;\">",
-        "<div style=\"font-weight:700;color:#0f172a;margin-bottom:8px;\">AI-assisted contextual analysis</div>",
+        "<div style=\"font-weight:700;color:#0f172a;margin-bottom:8px;\">Codex triage report</div>",
+        _html_value_row("Analysis type", "AI-assisted static analysis"),
+        _html_value_row("Verdict", escape(str(analysis.get("operator_summary") or analysis.get("summary") or "No operator summary provided."))),
+        _html_value_row("Current environment", escape(str(analysis.get("environment_assessment") or "No environment assessment provided."))),
         _html_value_row("Official advisory severity", escape(str(analysis.get("advisory_severity") or "UNKNOWN"))),
         _html_value_row("Estimated contextual risk", escape(str(analysis.get("contextual_risk") or "UNKNOWN"))),
+        _html_value_row("Exposure", escape(_codex_label(analysis.get("exposure") or "unknown"))),
+        _html_value_row("Impact", escape(_codex_label(analysis.get("impact") or "unknown"))),
+        _html_value_row("Action priority", escape(_codex_label(analysis.get("action_priority") or "unknown"))),
         _html_value_row("Confidence", escape(confidence_text)),
         _html_value_row("Analysis status", escape(str(analysis.get("analysis_status") or "unknown"))),
         _html_value_row("Dependency scope", escape(str(analysis.get("dependency_scope") or "unknown"))),
@@ -344,7 +411,7 @@ def _html_codex_analysis_block(analysis: Dict[str, object]) -> str:
             "Attacker-controlled input",
             escape(str(bool(reachability.get("attacker_controlled_input"))).lower()),
         ),
-        _html_value_row("Summary", escape(str(analysis.get("summary") or "No contextual summary provided."))),
+        _html_value_row("Why", escape(str(analysis.get("risk_rationale") or analysis.get("summary") or "No risk rationale provided."))),
     ]
     if reachability.get("explanation"):
         rows.append(_html_value_row("Reachability explanation", escape(str(reachability.get("explanation")))))
@@ -375,6 +442,10 @@ def _html_codex_analysis_block(analysis: Dict[str, object]) -> str:
     return "\n".join(rows)
 
 
+def _codex_label(value: object) -> str:
+    return str(value or "unknown").replace("_", " ")
+
+
 class Mailer:
     def __init__(self, config: Dict, dry_run: bool = False):
         self.config = config
@@ -386,7 +457,8 @@ class Mailer:
         message = EmailMessage()
         message["From"] = sender
         message["To"] = ", ".join(recipients)
-        message["Subject"] = event.subject
+        timestamp = (event.created_at or datetime.now()).astimezone()
+        message["Subject"] = f"{event.subject} [{timestamp:%Y-%m-%d %H:%M:%S %z}]"
         message["X-Cerberus-Host"] = socket.gethostname()
         message["X-Cerberus-Severity"] = _event_severity(event)
         message["X-Priority"] = "1" if _event_severity(event) in ("CRITICAL", "HIGH") else "3"

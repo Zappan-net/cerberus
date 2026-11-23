@@ -12,6 +12,23 @@ scanner:
   max_include_depth: 4
   max_directory_walk_depth: 3
   repeated_failure_threshold: 3
+  resolve_local_proxy_processes: true
+  local_proxy_root_hints:
+    - /home/webserv
+    - /srv
+    - /opt
+
+# Interpreter/runtime CVEs are separate from npm/Composer/PyPI dependencies.
+# Automatic association uses listening local processes, never PATH guesses.
+runtime_audit:
+  enabled: true
+  cache_ttl_hours: 24
+  bindings: []
+  # Explicit administrator association for a stopped/non-discoverable backend:
+  # - vhost: app.example.test
+  #   kind: php  # php, node, python
+  #   executable: /opt/php/current/sbin/php-fpm
+  #   repository_path: /srv/example-app
 
 notifications:
   email_to:
@@ -53,14 +70,19 @@ codex_analysis:
   enabled: false
   executable: codex
   codex_home: ""
+  language: en
   model: ""
   timeout_seconds: 180
+  retry_attempts: 1
+  retry_delay_seconds: 10
   maximum_output_bytes: 65536
   maximum_findings_per_run: 10
   minimum_severity: MEDIUM
   repository_path: ""
   sandbox: read-only
   network_access: false
+  ignore_user_config: true
+  skip_git_repo_check: true
   cache_ttl_seconds: 86400
   include_failure_diagnostics: true
   prompt_template: ""

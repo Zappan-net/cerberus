@@ -27,6 +27,7 @@ Cerberus is a maintainable Python 3 monitor for Debian servers that inspects ngi
 - keeps a local SQLite advisory cache and still works in offline scans against cached data
 - sends readable HTML alerts with severity grouping, fixed versions, and concise remediation hints
 - optionally enriches vulnerability alerts with Codex CLI static triage while keeping scanner severity authoritative
+- checks associated PHP, Node.js and Python runtimes separately from application dependencies, with explicit coverage diagnostics
 
 ![Cerberus HTML alert example](docs/mail-example-short.png)
 
@@ -35,6 +36,7 @@ Author: Julien Wehrbach.
 
 Detailed internal documentation is available in [docs/CODE_BREAKDOWN.md](docs/CODE_BREAKDOWN.md).
 Architecture diagrams are available in [docs/DIAGRAMS.md](docs/DIAGRAMS.md).
+Runtime inventory, advisory coverage and optional AI triage are documented in [docs/RUNTIME_AUDIT.md](docs/RUNTIME_AUDIT.md).
 An editable office export source is available in [docs/README_EXPORT.md](docs/README_EXPORT.md).
 
 ## Architecture
@@ -60,6 +62,40 @@ The project is split into explicit layers:
    Orchestrates one full scan, cache refresh, deduplicated notification generation, and the optional internal daemon loop.
 
 ## Technical choices
+
+### Runtime CVEs and optional Codex triage
+
+Detecting Composer packages is not enough to audit PHP itself. `runtime_audit.py`
+associates local backend processes (or explicit administrator bindings) with their
+PHP, Node.js or Python executable. Runtime checks are enabled by default and use
+official repository advisories plus Debian source-package/backport information.
+They do not guess the deployed interpreter from `PATH`. Missing inventory or
+unsupported advisory data produces a coverage warning, not a clean bill of health.
+The sources are **not exhaustive**, particularly for Node.js and Python.
+
+```yaml
+runtime_audit:
+  enabled: true
+  cache_ttl_hours: 24
+  bindings: []
+codex_analysis:
+  enabled: false
+```
+
+For CPython, Cerberus queries OSV using the commit of the official Python release
+tag. This reads the [PSF advisory database](https://github.com/psf/advisory-database)
+without relying on the empty `python/cpython` GitHub security advisory list.
+Matched PSF and CVE records become one finding; unverified local backports and
+missing fixed-version data remain explicit. See [runtime audit details](docs/RUNTIME_AUDIT.md).
+
+Codex remains optional and disabled by default. Existing local opt-in settings are
+preserved on update. When enabled, its static triage receives runtime provenance
+and application context, but cannot replace official severity or establish live
+network exposure from a listening socket alone. Alerts still work without Codex.
+See [runtime audit configuration and limitations](docs/RUNTIME_AUDIT.md) for
+stopped-service bindings, offline behavior, backports and the additive SQLite migration.
+
+### Implementation choices
 
 - Python 3 standard library first, plus `PyYAML` for configuration parsing.
 - `systemd timer` preferred over an infinite daemon loop. It is simpler, more observable, and more resilient on Debian. An internal `daemon` mode is still provided for environments that want it.
@@ -251,8 +287,27 @@ Main keys:
 
 - `nginx.sites_enabled_dir`: nginx vhost directory to scan.
 - `scanner.default_roots`: fallback roots to inspect if nginx `root` is absent or incomplete.
+- `scanner.resolve_local_proxy_processes`: when enabled, loopback `proxy_pass` targets such as `127.0.0.1:8787` are correlated with the local listening process through `/proc` to infer a bounded project root.
+- `scanner.local_proxy_root_hints`: allowed parent directories for process-derived proxy roots, used to avoid broad arbitrary filesystem scans.
+
+Local proxy discovery also resolves private bind mounts (including systemd
+`BindReadOnlyPaths`) through the listening process's mount table. The mapped host
+path must identify the same filesystem object and remain inside the configured
+`scanner.local_proxy_root_hints`. Cerberus does not enter namespaces or weaken
+service isolation. Inaccessible or unmappable projects remain coverage warnings,
+not dependency vulnerabilities; use `explain-vhost` to inspect discovery.
+
+Redirect-only server blocks do not generate missing-stack warnings. A standalone
+catch-all `location /` return is also recognized, including ACME exceptions.
+Other application roots and upstreams still require detection. A standalone
+Node project with a valid manifest, no declared dependencies and no dependency
+tree/lockfile skips npm dependency auditing as not applicable; this does not audit
+the Node runtime itself. Projects declaring dependencies still warn if npm or the
+required lockfile is missing. Missing `pip-audit` is reported as an unavailable
+native audit, not a command that ran and failed; local advisory matching continues.
 - `scanner.command_timeout_seconds`: timeout for `npm audit`, `composer audit`, `pip-audit`, and `pip freeze`.
 - `scanner.repeated_failure_threshold`: number of identical failures before an alert is sent.
+- Repeated audit command failures are reported as scanner pipeline incidents, not CVE findings. When several vhosts point to the same project root and the same audit command fails, Cerberus groups them into one notification with `Affected targets`.
 - `notifications.method`: `sendmail` or `smtp`.
 - `notifications.smtp_host` / `notifications.smtp_port`: SMTP relay endpoint used when `method: smtp`.
 - `notifications.smtp_ssl`: enable implicit TLS (`SMTP_SSL`), typically for port 465.
@@ -295,7 +350,7 @@ Do not enable both `smtp_ssl` and `smtp_starttls` at the same time.
 
 ### Optional Codex Static Analysis
 
-Cerberus can optionally ask Codex CLI to perform bounded static analysis for selected vulnerability findings. This is best-effort enrichment only: official scanner severity, advisory ID, fixed version, and notification deduplication remain unchanged if Codex is disabled, missing, times out, or returns invalid output.
+Cerberus can optionally ask Codex CLI to perform bounded static analysis for selected vulnerability findings. This is best-effort enrichment only: official scanner severity, advisory ID, fixed version, and notification delivery remain controlled by Cerberus if Codex is disabled, missing, times out, or returns invalid output.
 
 The feature is disabled by default:
 
@@ -304,24 +359,42 @@ codex_analysis:
   enabled: false
   executable: codex
   codex_home: ""
+  language: en
   timeout_seconds: 180
+  retry_attempts: 1
+  retry_delay_seconds: 10
   maximum_output_bytes: 65536
   maximum_findings_per_run: 10
   minimum_severity: MEDIUM
   repository_path: ""
   sandbox: read-only
   network_access: false
+  ignore_user_config: true
+  skip_git_repo_check: true
   cache_ttl_seconds: 86400
+  include_failure_diagnostics: true
 ```
 
-When enabled, Cerberus invokes Codex non-interactively from the relevant source directory with an explicit output schema, read-only sandbox request, `approval_policy="never"`, a sanitized environment, a hard timeout, and a maximum output size. The subprocess does not receive SSH agent sockets, cloud credentials, SMTP secrets, or unrelated environment variables.
+When enabled, Cerberus invokes Codex non-interactively from the relevant source directory with an explicit output schema, read-only sandbox request, `approval_policy="never"`, `--ignore-user-config` and `--skip-git-repo-check` by default, a sanitized environment, a hard timeout, and a maximum output size. The subprocess does not receive SSH agent sockets, cloud credentials, SMTP secrets, or unrelated environment variables.
+
+`ignore_user_config` keeps Codex authentication through `codex_home` but avoids loading user-level Codex plugins, project trust settings, and local app integrations. This is safer for daemon execution and prevents read-only sandbox failures caused by unrelated Codex desktop/plugin state. If you need a specific model, set `codex_analysis.model` explicitly in Cerberus rather than relying on the Codex user config.
+
+`skip_git_repo_check` is enabled by default because Cerberus scans application trees discovered from nginx/system processes, and those directories are often not pre-approved Codex workspaces. The Codex subprocess still runs with the configured sandbox and sanitized environment.
+
+If Codex returns a transient execution failure, invalid JSON, or schema-invalid output, Cerberus retries after `retry_delay_seconds`. The default is one retry. Repository lookup failures and missing executables are not retried because waiting will not fix them.
 
 `codex_home` points Codex CLI at the account/config directory it should use. If empty, Cerberus uses `<state.state_dir>/codex`. On a real deployment, set this to a dedicated Codex home that has been authenticated for the service user, for example `/var/lib/vhost-cve-monitor/codex`.
 
-Validated results add a separate email section named `AI-assisted contextual analysis` containing:
+Codex needs write access to its own state directory even with `--ephemeral` and a read-only source sandbox. The source installer and Debian post-install script generate `vhost-cve-monitor.service.d/30-cerberus-codex.conf`, granting systemd write access only to the configured Codex home. Other service protections remain enabled. Rerun the installer after enabling Codex or changing `codex_home`; this refreshes the exception on each deployment without copying credentials. An unwritable home is detected before launching Codex and reported without futile retries. A successful interactive test alone does not validate systemd permissions.
+
+`language` controls the human-facing narrative fields returned by Codex. Supported values are `en` and `fr`. JSON keys, enum values, scanner severity, and Cerberus mail labels remain stable.
+
+Validated results add a separate email section named `Codex triage report` containing:
 
 - official advisory severity, preserved from the scanner
 - estimated contextual risk, reported separately
+- operator verdict, current environment assessment, exposure, impact class, and action priority
+- risk rationale in human-readable language
 - confidence
 - dependency scope
 - reachability and attacker-controlled input observations
@@ -332,8 +405,21 @@ Example distinction:
 ```text
 Official advisory severity: HIGH
 Estimated contextual risk: LOW
+Current environment: The service is bound to loopback and only reachable through a restricted reverse proxy.
+Exposure: local only
+Impact: denial of service
+Action priority: scheduled
 Confidence: 82%
 Analysis status: completed
+```
+
+Example operator summaries:
+
+```text
+Critical unauthenticated remote code execution risk: public route passes attacker-controlled input to the vulnerable parser.
+Local-only denial-of-service risk: exploitation requires shell access or trusted local input.
+Build-time maintenance risk: vulnerable package is only observed in the development dependency tree.
+No reachable path observed: vulnerable package is installed, but no attacker-controlled use was found.
 ```
 
 Security model:
@@ -343,6 +429,28 @@ Security model:
 - Source files, advisory text, comments, filenames, and package metadata are treated as untrusted input in the prompt.
 - Codex is not allowed to modify files, update dependencies, commit, push, deploy, create pull requests, or replace the scanner severity.
 - Cerberus requests read-only sandboxing through Codex CLI, but operating-system-level isolation depends on the installed Codex CLI and host environment.
+- When `include_failure_diagnostics` is enabled, Codex execution failures are shown as concise diagnostics instead of silently disappearing from the email.
+
+Alert history:
+
+`notification-history` exposes the append-only SQLite journal introduced by this update:
+
+```sh
+vhost-cve-monitor --config /etc/vhost-cve-monitor/config.yml notification-history --advisory CVE-2026-12345 --limit 100
+vhost-cve-monitor --config /etc/vhost-cve-monitor/config.yml notification-history --vhost app.example.net --scan-id SCAN_ID
+```
+
+Each row includes a scan ID, UTC timestamp, target, advisory aliases, before/after state, changed fields, and a decision reason. `decision`, `attempt`, `success`, `failure`, and `dry_run` are separate phases linked by decision and notification IDs. `success` means the mail transport accepted the message, not proof of inbox delivery. A missing outcome after an attempt can indicate interruption. Identical scans and suppressed enrichment are recorded too. Alias queries also find earlier entries under linked identifiers.
+
+Migration creates an empty `notification_journal`; existing state is preserved and no past deliveries are invented. Updates and deletes are rejected by SQLite triggers. The journal currently has no automatic retention limit; include it in database backup/storage planning. Dry-run decisions do not consume vulnerability notifications or advance failure counters. Finding snapshots may still refresh. Existing delivery retry policy is unchanged: recorded decisions are not delivery receipts.
+
+After editing sources, rerun `sh packaging/scripts/install.sh`: systemd uses the installed virtual-environment package, not `src/`. The installer verifies every installed Python source file against the checkout and fails on a mismatch. `ENABLE_TIMERS=0` skips timer activation for controlled maintenance; restore the timers afterwards.
+
+- Cerberus stores an alert history in SQLite in addition to exact fingerprints.
+- Correlation uses target, stack/ecosystem, package, installed version, evidence path, and intersecting advisory IDs/aliases (including IDs found in reference URLs). Titles and file line numbers are not identities.
+- Metadata-only changes (title, line, fixed version, references, or fix risk) do not resend alerts. A newly affected vhost still notifies; digest grouping preserves all targets. Distinct advisories with equal titles remain distinct.
+- This prevents a recent GHSA advisory from being reported again as a brand-new finding when upstream later enriches it with a CVE identifier only.
+- Material changes such as severity or runtime/development scope still trigger a notification.
 
 Environment overrides are available for automation:
 
@@ -350,6 +458,10 @@ Environment overrides are available for automation:
 CERBERUS_CODEX_ANALYSIS_ENABLED=true
 CERBERUS_CODEX_ANALYSIS_EXECUTABLE=/usr/local/bin/codex
 CERBERUS_CODEX_ANALYSIS_CODEX_HOME=/var/lib/vhost-cve-monitor/codex
+CERBERUS_CODEX_ANALYSIS_LANGUAGE=fr
+CERBERUS_CODEX_ANALYSIS_RETRY_ATTEMPTS=1
+CERBERUS_CODEX_ANALYSIS_RETRY_DELAY_SECONDS=10
+CERBERUS_CODEX_ANALYSIS_IGNORE_USER_CONFIG=true
 CERBERUS_CODEX_ANALYSIS_MINIMUM_SEVERITY=HIGH
 CERBERUS_CODEX_ANALYSIS_MAXIMUM_FINDINGS_PER_RUN=3
 CERBERUS_CODEX_ANALYSIS_REPOSITORY_PATH=/srv/app
@@ -589,6 +701,31 @@ Mail presentation:
 - recommendations are stack-aware and mention fixed versions when the advisory data allows it
 - npm recommendations distinguish immediate runtime remediation from scheduled development/build dependency maintenance, and semver-major `fixAvailable` suggestions are flagged as risky instead of recommending blind `npm audit fix --force`
 
+## Fixed-version evidence
+
+Repair metadata is resolved per advisory **and package/ecosystem** from OSV `fixed` events,
+with the official GitHub advisory API as fallback when OSV is incomplete. GHSA and CVE
+aliases share a local cache. No token is required; offline scans reuse cached evidence.
+`npm fixAvailable` is not treated as proof of an advisory fix because it may name a parent
+package. An inclusive affected bound (`<=`) never supplies a guessed patched version.
+
+Emails, `export-findings` (`fix_details`), and Codex context retain the source URL,
+UTC collection time, affected ranges and patched releases by source/branch. Prereleases
+are preserved. Conflicting sources are flagged for manual review, not silently combined
+into upgrade advice. An installed version is independent of the minimum patched release.
+
+Confirmed metadata is cached for 24 hours; incomplete, unpublished, conflicting or failed
+lookups are retried after 15 minutes. Requests use the scanner network timeout and a 2 MiB
+response cap. GitHub rate limits impose bounded backoff. A failed refresh preserves prior
+confirmed evidence and reports refresh errors separately. `not_published` means an explicit
+null GitHub patched version; `incomplete` and `retrieval_failed` do not mean no fix exists.
+
+Repair enrichment is recorded in `notification-history` with before/after provenance, but
+**metadata-only changes, including a newly known fix, do not resend alerts** under the current
+notification policy. New vulnerabilities, newly affected vhosts and severity changes still
+notify. SQLite migrations are additive and do not invent historical provenance. Reinstall
+with `sudo sh packaging/scripts/install.sh`; the helper checks installed/source parity.
+
 ## Severity-grouped HTML email example
 
 Cerberus sends readable HTML alert emails with per-severity grouping, concise remediation guidance, and a plain-text fallback.
@@ -652,6 +789,13 @@ Typical flow:
 6. Query or reuse the local SQLite advisory cache.
 7. Project normalized findings back to the affected vhosts and emit deduplicated notifications.
 
+## Runtime TLS maintenance
+
+Cerberus's Python environment and pip's vendored certificate bundle need their
+own security maintenance. See [Python runtime and TLS trust](docs/RUNTIME_TLS.md)
+for isolated environment migration, certificate fingerprint checks, validation
+without email, and rollback precautions for GHSA-6q48-6c7w-9gw2.
+
 ## Known limits
 
 - nginx parsing is intentionally conservative. It handles common directive layouts but is not a full nginx interpreter.
@@ -659,7 +803,7 @@ Typical flow:
 - Composer, npm, and pip tooling can report more precise runtime findings than manifest-only parsing.
 - OSV does not cover every ecosystem with equal depth. The cache is only as complete as the upstream data for the detected packages.
 - Gitea version detection is heuristic unless the `gitea` binary is available or a `VERSION` file exists.
-- Projects behind `proxy_pass` without a readable local filesystem tree may only yield service-level detection, not full dependency extraction.
+- Projects behind `proxy_pass` are resolved only when the target is a local loopback listener and the owning process exposes enough filesystem evidence, such as a project cwd, a virtualenv path, or absolute argv paths under `scanner.local_proxy_root_hints`.
 - Fixed versions are only as accurate as the upstream advisory metadata. When Cerberus has to infer a first safe version from a range expression, it keeps the wording explicit and conservative.
 
 ## Improvement plan

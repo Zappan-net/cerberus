@@ -10,6 +10,10 @@ dist/
 .codex
 RESUME
 .venv/
+.venv
+prompt-codex-php-CVE.txt
+.venvs/
+.runtime-backups/
 debian/.debhelper/
 debian/debhelper-build-stamp
 debian/files

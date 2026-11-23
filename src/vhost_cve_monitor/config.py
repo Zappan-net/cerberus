@@ -19,6 +19,13 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "max_include_depth": 4,
         "max_directory_walk_depth": 3,
         "repeated_failure_threshold": 3,
+        "resolve_local_proxy_processes": True,
+        "local_proxy_root_hints": ["/home/webserv", "/srv", "/opt"],
+    },
+    "runtime_audit": {
+        "enabled": True,
+        "cache_ttl_hours": 24,
+        "bindings": [],
     },
     "notifications": {
         "email_to": ["root@localhost"],
@@ -55,14 +62,19 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "enabled": False,
         "executable": "codex",
         "codex_home": "",
+        "language": "en",
         "model": "",
         "timeout_seconds": 180,
+        "retry_attempts": 1,
+        "retry_delay_seconds": 10,
         "maximum_output_bytes": 65536,
         "maximum_findings_per_run": 10,
         "minimum_severity": "MEDIUM",
         "repository_path": "",
         "sandbox": "read-only",
         "network_access": False,
+        "ignore_user_config": True,
+        "skip_git_repo_check": True,
         "cache_ttl_seconds": 86400,
         "include_failure_diagnostics": True,
         "prompt_template": "",
@@ -106,14 +118,19 @@ def _apply_env_overrides(config: Dict[str, Any]) -> Dict[str, Any]:
         "CERBERUS_CODEX_ANALYSIS_ENABLED": ("enabled", _env_bool),
         "CERBERUS_CODEX_ANALYSIS_EXECUTABLE": ("executable", str),
         "CERBERUS_CODEX_ANALYSIS_CODEX_HOME": ("codex_home", str),
+        "CERBERUS_CODEX_ANALYSIS_LANGUAGE": ("language", str),
         "CERBERUS_CODEX_ANALYSIS_MODEL": ("model", str),
         "CERBERUS_CODEX_ANALYSIS_TIMEOUT_SECONDS": ("timeout_seconds", int),
+        "CERBERUS_CODEX_ANALYSIS_RETRY_ATTEMPTS": ("retry_attempts", int),
+        "CERBERUS_CODEX_ANALYSIS_RETRY_DELAY_SECONDS": ("retry_delay_seconds", int),
         "CERBERUS_CODEX_ANALYSIS_MAXIMUM_OUTPUT_BYTES": ("maximum_output_bytes", int),
         "CERBERUS_CODEX_ANALYSIS_MAXIMUM_FINDINGS_PER_RUN": ("maximum_findings_per_run", int),
         "CERBERUS_CODEX_ANALYSIS_MINIMUM_SEVERITY": ("minimum_severity", str),
         "CERBERUS_CODEX_ANALYSIS_REPOSITORY_PATH": ("repository_path", str),
         "CERBERUS_CODEX_ANALYSIS_SANDBOX": ("sandbox", str),
         "CERBERUS_CODEX_ANALYSIS_NETWORK_ACCESS": ("network_access", _env_bool),
+        "CERBERUS_CODEX_ANALYSIS_IGNORE_USER_CONFIG": ("ignore_user_config", _env_bool),
+        "CERBERUS_CODEX_ANALYSIS_SKIP_GIT_REPO_CHECK": ("skip_git_repo_check", _env_bool),
         "CERBERUS_CODEX_ANALYSIS_CACHE_TTL_SECONDS": ("cache_ttl_seconds", int),
         "CERBERUS_CODEX_ANALYSIS_INCLUDE_FAILURE_DIAGNOSTICS": ("include_failure_diagnostics", _env_bool),
         "CERBERUS_CODEX_ANALYSIS_PROMPT_TEMPLATE": ("prompt_template", str),
@@ -123,6 +140,8 @@ def _apply_env_overrides(config: Dict[str, Any]) -> Dict[str, Any]:
             continue
         codex[key] = caster(os.environ[env_name])
     merged["codex_analysis"] = codex
+    if "CERBERUS_RUNTIME_AUDIT_ENABLED" in os.environ:
+        merged.setdefault("runtime_audit", {})["enabled"] = _env_bool(os.environ["CERBERUS_RUNTIME_AUDIT_ENABLED"])
     return merged
 
 
@@ -164,6 +183,11 @@ def validate_config(config: Dict[str, Any]) -> Dict[str, List[str]]:
     default_roots = scanner.get("default_roots")
     if default_roots is not None and not isinstance(default_roots, list):
         errors.append("scanner.default_roots must be a list when provided")
+    root_hints = scanner.get("local_proxy_root_hints")
+    if root_hints is not None and not isinstance(root_hints, list):
+        errors.append("scanner.local_proxy_root_hints must be a list when provided")
+    if not isinstance(scanner.get("resolve_local_proxy_processes"), bool):
+        errors.append("scanner.resolve_local_proxy_processes must be a boolean")
 
     email_to = notifications.get("email_to")
     if not isinstance(email_to, list) or not email_to or not all(str(item).strip() for item in email_to):
@@ -207,11 +231,38 @@ def validate_config(config: Dict[str, Any]) -> Dict[str, List[str]]:
     if level and level not in {"CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG"}:
         errors.append("logging.level must be one of CRITICAL, ERROR, WARNING, INFO, DEBUG")
 
+    runtime = config.get("runtime_audit", {})
+    if not isinstance(runtime.get("enabled", True), bool):
+        errors.append("runtime_audit.enabled must be a boolean")
+    if not isinstance(runtime.get("cache_ttl_hours", 24), int) or runtime.get("cache_ttl_hours", 24) <= 0:
+        errors.append("runtime_audit.cache_ttl_hours must be positive")
+    bindings = runtime.get("bindings", [])
+    if not isinstance(bindings, list):
+        errors.append("runtime_audit.bindings must be a list")
+    else:
+        for binding in bindings:
+            if (not isinstance(binding, dict) or binding.get("kind") not in {"php", "node", "python"}
+                    or not str(binding.get("executable", "")).startswith("/")
+                    or not binding.get("vhost") or not str(binding.get("repository_path", "")).startswith("/")):
+                errors.append("runtime binding requires kind, vhost, absolute executable and repository_path")
     if not isinstance(codex.get("enabled"), bool):
         errors.append("codex_analysis.enabled must be a boolean")
+    if not isinstance(codex.get("ignore_user_config"), bool):
+        errors.append("codex_analysis.ignore_user_config must be a boolean")
+    if not isinstance(codex.get("skip_git_repo_check"), bool):
+        errors.append("codex_analysis.skip_git_repo_check must be a boolean")
     if not str(codex.get("executable") or "").strip():
         errors.append("codex_analysis.executable must be set")
-    for key in ("timeout_seconds", "maximum_output_bytes", "maximum_findings_per_run", "cache_ttl_seconds"):
+    if str(codex.get("language") or "en").strip().lower() not in {"en", "fr"}:
+        errors.append("codex_analysis.language must be either 'en' or 'fr'")
+    for key in (
+        "timeout_seconds",
+        "retry_attempts",
+        "retry_delay_seconds",
+        "maximum_output_bytes",
+        "maximum_findings_per_run",
+        "cache_ttl_seconds",
+    ):
         value = codex.get(key)
         if not isinstance(value, int) or value < 0:
             errors.append("codex_analysis.{} must be an integer greater than or equal to 0".format(key))

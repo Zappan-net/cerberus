@@ -1,5 +1,78 @@
 # Cerberus Code Breakdown
 
+Private bind-mount discovery uses `/proc/<pid>/mountinfo` and
+`/proc/self/mountinfo` to translate process paths onto the host filesystem.
+`stack_detection._process_host_path()` selects the most specific process mount,
+matches filesystem device/root, and verifies object identity using `samefile`
+against `/proc/<pid>/root`. Unrelated shadowed paths are not scanned. Existing
+root-hint filtering still applies after translation. No `nsenter`, mount changes,
+application execution or systemd security relaxation is involved.
+
+`stack_not_detected` is a discovery/coverage diagnostic. Text and HTML digest
+recommendations ask operators to inspect upstreams, mappings and manifests,
+rather than to upgrade an unidentified dependency.
+
+`_collect_scan_data()` excludes redirect-only blocks from missing-stack failures,
+but retains warnings for unresolved application backends, even for the same hostname.
+The nginx parser recognizes unconditional catch-all `location /` responses as
+well as server-level returns. ACME challenge roots do not imply an application;
+other location roots/upstreams still prevent redirect-only classification.
+`_npm_dependency_audit_not_applicable()` suppresses unavailable-audit warnings only
+for readable standalone manifests with no dependency declarations, workspaces,
+lockfiles or installed dependency tree. Native tooling prerequisites are reported
+explicitly; unavailable is distinct from an executed command failure.
+
+## Runtime interpreter auditing
+
+`runtime_audit.py` runs independently of manifest detection, including PHP without
+Composer. `scanner._collect_scan_data()` combines runtime and dependency results
+before the existing normalization, persistence and notification pipeline. Runtime
+issues carry `runtime_context`; dependency repair enrichment does not overwrite
+runtime/distributor fix data. Socket/PID association avoids selecting an unrelated
+interpreter from PATH. Explicit bindings cover stopped or otherwise unresolved
+backends without claiming that they are running.
+
+Debian source-package revisions use OSV and Debian tracker comparisons. Official
+repository GHSA feeds provide PHP/Node matches. CPython instead resolves the
+official `vX.Y.Z` release tag to a commit and queries OSV's PSF advisory data by
+that commit. PSF/CVE copies are combined before normalization, with CVSS severity
+from the CVE copy when needed. The version-keyed SQLite cache supports offline
+reuse; Git-only fix commits are not guessed into release versions. Matches retain
+provisional status when distributor backports cannot be resolved. Parallel PHP fixed branches have an
+explicit, tested inference; unsupported ranges produce diagnostics. These sources
+do not establish exhaustive coverage for every supported runtime.
+
+`current_findings.runtime_context_json` is an additive column defaulting to `{}`;
+`runtime_advisory_cache` is created lazily. Existing history is not rewritten.
+Text/HTML alerts, exports and optional Codex prompts share the runtime context.
+Codex remains independently opt-in; its cache includes context and prompt version.
+Tests exercise mocked PHP/Node/Python adapters and do not prove all distributions
+or deployed exposure conditions. See [runtime audit details](RUNTIME_AUDIT.md).
+
+## Package-scoped repair enrichment
+
+`fixed_versions.py` enriches collected issues before finding normalization. It consumes
+OSV SEMVER/ECOSYSTEM fixed events (not GIT commits) and falls back to GitHub's REST
+advisory API by GHSA or CVE. Package/ecosystem matching prevents cross-package repair
+leakage. Records preserve affected ranges, fixed releases, source URL and collection time;
+conflicting confirmed sources are exposed rather than resolved by guessing a version.
+
+`repair_cache` is an additive SQLite table keyed by ecosystem, package and advisory alias.
+Positive results live 24 hours; incomplete, unpublished, conflicting and failed refreshes
+live 15 minutes. Prior confirmed evidence survives missing data or transport failures.
+Rate-limited GitHub requests back off, and API responses are capped at 2 MiB.
+`package_findings.repair_json` separates package-scoped OSV metadata from legacy global
+advisory rows; legacy fallback is allowed only for a matching package and ecosystem.
+`current_findings.fix_details_json` persists the same structured evidence exposed as
+`fix_details` in exports, notifications and Codex prompts. Codex cache identity includes
+the fixed version/status, avoiding reuse of advice based on a formerly unknown fix.
+
+Notification journal before/after payloads include this provenance. Repair changes alone
+remain `progressive_enrichment`, not new vulnerabilities; current notification policy does
+not resend on newly available repairs. Migration is additive with no historical backfill.
+`tests/test_fixed_versions.py` covers structured API fixtures, aliases, branches,
+prereleases, failures, backoff, conflicts, persistence and metadata-only suppression.
+
 This document is a full technical walkthrough of the Cerberus codebase. It explains what each module does, how data flows through the program, how the local vulnerability cache works, how notifications are deduplicated, and where the current limits are.
 
 It is written for an operator or developer who needs to understand the actual implementation, not just the user-facing behavior.
@@ -184,24 +257,36 @@ It is deliberately outside the scanner core so the main vulnerability pipeline r
 Responsibilities:
 
 - decide whether a finding is eligible according to `codex_analysis.minimum_severity`
+- inject the requested Codex narrative language while keeping JSON schema keys stable
 - resolve and bound the source directory used as Codex working directory
 - construct a non-shell subprocess command
 - request Codex ephemeral, read-only, non-interactive execution with `approval_policy="never"`
+- ignore user-level Codex config by default while still using `CODEX_HOME` for authentication
 - set `CODEX_HOME` from `codex_analysis.codex_home` or `<state.state_dir>/codex`
+- test actual write access to Codex state before launching or retrying an analysis
 - pass a strict JSON schema to Codex
 - sanitize the subprocess environment
 - enforce timeout and maximum output size
+- retry transient Codex failures after a short delay
 - validate the returned JSON before it can reach notifications
+- require a concise operational verdict: operator summary, current environment assessment, risk rationale, exposure, impact class, contextual risk, action priority, confidence, and limitations
 - cache successful or insufficient-context results in SQLite
 
 Security controls:
 
+`systemd_codex.py` shares Codex home resolution with the runner. Source and Debian installers invoke it to refresh a dedicated `ReadWritePaths` drop-in, so deployments cannot silently remove the permission needed by the Codex app-server. It preserves unrelated overrides, rejects broad system roots, and removes its own exception when analysis is disabled. Source sandboxing and `ProtectHome=read-only` remain enabled; no credentials are copied into the package or generated drop-in.
+
 - no `shell=True`
 - no SSH agent socket or cloud credential inheritance
 - no SMTP password inheritance
+- no user-level Codex plugins or app integrations by default
 - no raw Codex output in mail
 - no change to official advisory severity
 - no automatic remediation, dependency updates, commits, pushes, pull requests, or deployments
+
+The Codex verdict is designed for triage rather than severity replacement. It can say, for example, that an advisory remains officially `HIGH` while the observed exposure is `local_only`, `build_time_only`, `authenticated_remote`, `unauthenticated_remote`, or `not_observed`, and classify the likely impact as remote code execution, data exposure, denial of service, SSRF, privilege escalation, or another bounded category.
+
+Invalid or failed Codex output remains best-effort. Transient execution failures, invalid JSON, and schema-invalid outputs can be retried according to `codex_analysis.retry_attempts` and `codex_analysis.retry_delay_seconds`. Configuration errors such as a missing executable or missing repository are not retried. When failure diagnostics are enabled, Cerberus renders a concise diagnostic status such as `timed_out`, `schema_invalid`, or `missing_repository`; it never renders unvalidated model output.
 
 Residual limitation:
 
@@ -267,6 +352,8 @@ Important guardrails:
 
 - `redirect-only` vhosts are skipped entirely
 - proxy-only vhosts without an explicit local root do not scan broad fallback roots such as `/home/webserv`
+- loopback proxy-only vhosts can infer a project root by resolving the listening local process through `/proc/net/tcp*`, `/proc/<pid>/fd`, `/proc/<pid>/cwd`, `/proc/<pid>/exe`, and `/proc/<pid>/cmdline`
+- process-derived roots are accepted only when they sit under `scanner.local_proxy_root_hints`
 - ignored directories such as `node_modules`, `vendor`, `.venv`, `venv`, `__pycache__`, and `.git` are pruned from traversal
 
 Why this is important:
@@ -430,24 +517,36 @@ This module is responsible for anti-spam behavior.
 SQLite tables:
 
 - `alert_state`
+- `alert_history`
 - `repeated_failures`
 - `codex_analysis_cache`
 
 `codex_analysis_cache` stores validated Codex analysis results by a stable key containing advisory, package, version, source evidence, prompt version, schema version, and source hash. It is independent from alert deduplication and only avoids repeated best-effort analysis of unchanged findings.
 
+`alert_history` records observed payloads, not a delivery receipt. Correlation reads existing `alert_state` payloads, groups by target, stack/ecosystem, package, version and evidence path, and requires intersecting advisory identifiers/aliases (also extracted from reference URLs). Transitive alias links are retained and the latest related observation wins over an older exact fingerprint. Titles and evidence line numbers are excluded. No schema migration or history reset is required. Lookup currently scans stored alert payloads; large histories may warrant an indexed alias table.
+
+Repeated scanner failures are tracked separately from vulnerabilities. Audit command failures such as `npm audit` timeouts are grouped by stack, project root, reason, and detail before notification, so two vhosts backed by the same project produce one pipeline incident with multiple affected targets instead of duplicate pseudo-findings.
+
 #### Alert deduplication
+
+`notification_journal` is a separate append-only table, created empty on existing databases. Decision rows are inserted in the same transaction as current alert state updates. `begin_scan()` assigns a UUID; each row records UTC time, vhost, logical identity/alias set, actual before state, normalized after state, changed fields and reason. Dry-run decisions only write the journal, leaving notification state and failure counters untouched. `record_delivery()` links each per-vhost decision to a shared notification ID and records attempt/success/failure/dry-run phases. Digest grouping carries decision IDs without collapsing the historical vhost records. Errors record exception classes, not raw transport credentials or message bodies. A process interruption may leave an attempt without an outcome; transport success does not prove inbox delivery. The CLI `notification-history` returns this evidence, with alias-aware advisory, vhost and scan filters. Triggers reject UPDATE/DELETE; administrators still control the database file. No retention/compaction policy is implemented.
+
+Native npm advisory severity is authoritative within `_parse_npm_audit`; package aggregate severity is only a fallback for absent/unrecognized advisory severity. Codex cache identity includes scanner severity so a corrected advisory does not reuse a report embedding the old official severity.
 
 `should_alert()`:
 
 1. builds a stable hash of the alert payload
 2. compares it to the last stored hash for the same fingerprint
 3. suppresses identical alerts
-4. allows alerts when the payload changes, for example severity
+4. compares with the latest related advisory state even when the exact fingerprint already exists
+5. suppresses identifier-only progressive enrichment such as GHSA to CVE alias updates
+6. allows alerts when material fields change, for example severity or runtime/development scope
 
 This directly implements:
 
 - send on new vulnerability
 - resend when severity or other tracked fields change
+- avoid reporting the same logical finding as new just because upstream advisory aliases became richer
 - do not keep spamming unchanged alerts
 
 #### Repeated failure tracking
@@ -482,7 +581,8 @@ Behavior:
 - logs transport choice in verbose mode
 - supports relay authentication via `smtp_username` plus either `smtp_password` or `smtp_password_env`
 - rejects invalid combinations such as enabling both `smtp_ssl` and `smtp_starttls`
-- renders validated Codex analysis in a clearly separated `AI-assisted contextual analysis` block for both single vulnerability alerts and digests
+- renders validated Codex analysis in a clearly separated `Codex triage report` block for both single vulnerability alerts and digests
+- renders concise Codex failure diagnostics when configured, without exposing raw model output
 
 Dry-run mode is important because it lets you validate the full scan path without spamming real recipients.
 
@@ -885,7 +985,7 @@ Different upstream tools still format severity differently, but Cerberus now app
 
 ### Proxy-to-backend attribution stays heuristic
 
-Cerberus now avoids broad fallback-root scans for proxy-only vhosts, and it can walk from a static `build/` root back to an application parent. That still remains heuristic. It does not resolve arbitrary reverse-proxy targets into concrete project roots automatically.
+Cerberus now avoids broad fallback-root scans for proxy-only vhosts, and it can walk from a static `build/` root back to an application parent. For loopback `proxy_pass` targets, it can also map the listening socket to a local process and infer a project root from cwd, virtualenv executable paths, or absolute command-line paths. That remains heuristic and deliberately bounded by `scanner.local_proxy_root_hints`; it does not resolve arbitrary remote reverse-proxy targets into concrete project roots.
 
 ### Cache growth is unbounded
 

@@ -6,6 +6,7 @@ import re
 import socket
 import time
 import traceback
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from fnmatch import fnmatch
@@ -14,6 +15,7 @@ from typing import Dict, List, Optional, Tuple
 
 from .advisory_logic import (
     SEVERITY_ORDER,
+    advisory_ids_from_fields,
     build_recommendation,
     canonical_advisory_id,
     merge_fixed_versions,
@@ -24,12 +26,14 @@ from .audits import scan_stack
 from .codex_analysis import CodexAnalysisRunner, codex_analysis_enabled
 from .config import validate_config
 from .cve_db import CVEDatabase
-from .models import AuditIssue, NotificationEvent, ScanFailure, VhostScanResult
+from .fixed_versions import fix_description
+from .models import AuditIssue, NotificationEvent, ScanFailure, StackMatch, VhostScanResult
 from .nginx_parser import load_vhosts
 from .notify import Mailer
 from .notify import NotificationDeliveryError
 from .stack_detection import _detect_root_candidates, detect_stacks
 from .state_store import StateStore
+from .runtime_audit import RuntimeAuditor, runtime_description
 from .subprocess_utils import command_exists
 
 LOGGER = logging.getLogger(__name__)
@@ -61,11 +65,13 @@ class NormalizedFinding:
     details: str
     fixed_version: Optional[str]
     affected_range: Optional[str]
+    fix_details: Dict = field(default_factory=dict)
     audit_scope: str = "runtime"
     fix_is_semver_major: bool = False
     aliases: List[str] = field(default_factory=list)
     references: List[str] = field(default_factory=list)
     projections: List[FindingProjection] = field(default_factory=list)
+    runtime_context: Dict = field(default_factory=dict)
 
 
 def _filter_reasons(name: str, path: Optional[str], config: Dict) -> List[str]:
@@ -274,6 +280,7 @@ class CerberusScanner:
         force_notify: bool = False,
     ) -> Tuple[List[VhostScanResult], List[NotificationEvent]]:
         LOGGER.info("Starting scan cycle")
+        self.state.begin_scan(dry_run=self.dry_run)
         if force_notify:
             LOGGER.warning("Forced notification mode enabled; vulnerability deduplication state will not be changed")
         now, results, issue_occurrences, failure_notifications = self._collect_scan_data(only_vhosts=only_vhosts)
@@ -282,9 +289,32 @@ class CerberusScanner:
         LOGGER.info("Prepared %s notifications", len(notifications))
         for notification in self._prepare_notifications_for_delivery(notifications):
             LOGGER.info("Sending %s notification: %s", notification.category, notification.subject)
-            self.mailer.send(notification)
+            self._send_notification(notification)
         LOGGER.info("Scan cycle completed")
         return results, notifications
+
+    def _send_notification(self, event: NotificationEvent) -> None:
+        self.state.dry_run = self.dry_run
+        decision_ids = event.metadata.get("decision_ids") or []
+        if not decision_ids:
+            decision_id = self.state.decision_ids.get(event.fingerprint)
+            if decision_id:
+                decision_ids = [decision_id]
+        if not decision_ids:
+            self.state.record_forced_decision(event.fingerprint, event.metadata, "explicit_notification")
+            decision_ids = [self.state.decision_ids[event.fingerprint]]
+        notification_id = uuid.uuid4().hex
+        if self.dry_run:
+            self.state.record_delivery(decision_ids, "dry_run", notification_id, "transport_not_called")
+            self.mailer.send(event)
+            return
+        self.state.record_delivery(decision_ids, "attempt", notification_id, "transport_started")
+        try:
+            self.mailer.send(event)
+        except Exception as exc:
+            self.state.record_delivery(decision_ids, "failure", notification_id, type(exc).__name__)
+            raise
+        self.state.record_delivery(decision_ids, "success", notification_id, "accepted_by_transport")
 
     def _collect_scan_data(self, only_vhosts: Optional[List[str]] = None) -> Tuple[datetime, List[VhostScanResult], List[Dict], List[NotificationEvent]]:
         now = datetime.now(timezone.utc)
@@ -292,7 +322,8 @@ class CerberusScanner:
         LOGGER.info("Loaded %s nginx vhosts", len(vhosts))
         results: List[VhostScanResult] = []
         issue_occurrences: List[Dict] = []
-        failure_notifications: List[NotificationEvent] = []
+        failure_occurrences: List[Dict[str, object]] = []
+        runtime_auditor = RuntimeAuditor(self.config, self.cve_db, self.allow_network)
         for vhost in vhosts:
             server_names = list(vhost.server_names) or [vhost.primary_server_name]
             if not _matches_only_vhost(server_names, only_vhosts):
@@ -310,8 +341,11 @@ class CerberusScanner:
             result = VhostScanResult(vhost=vhost)
             stacks = detect_stacks(vhost, self.config)
             LOGGER.info("Detected %s stack candidates for %s", len(stacks), vhost.primary_server_name)
-            if not stacks:
+            runtime_results = [item for item in runtime_auditor.scan(vhost)
+                               if _is_allowed(vhost.primary_server_name, item.stack.root_path, self.config)]
+            if not stacks and not runtime_results and not vhost.is_redirect_only:
                 result.failures.append(ScanFailure(scope=vhost.primary_server_name, reason="stack_not_detected"))
+            stack_results = []
             for stack in stacks:
                 LOGGER.info(
                     "Processing stack %s for vhost %s at %s",
@@ -325,6 +359,9 @@ class CerberusScanner:
                     timeout=self.timeout,
                     allow_network=self.allow_network,
                 )
+                stack_results.append(stack_result)
+            for stack_result in stack_results + runtime_results:
+                stack = stack_result.stack
                 LOGGER.info(
                     "Stack %s finished for %s: %s deps, %s issues, %s failures",
                     stack.stack_name,
@@ -335,6 +372,8 @@ class CerberusScanner:
                 )
                 result.stacks.append(stack_result)
                 for issue in stack_result.issues:
+                    if not issue.runtime_context:
+                        self.cve_db.repairs.enrich(issue.vulnerability, issue.dependency, self.allow_network)
                     issue_occurrences.append(
                         {
                             "vhost": vhost.primary_server_name,
@@ -342,11 +381,24 @@ class CerberusScanner:
                             "issue": issue,
                         }
                     )
-                failure_notifications.extend(
-                    self._build_failure_notifications(vhost.primary_server_name, stack_result.failures)
+                for failure in stack_result.failures:
+                    failure_occurrences.append(
+                        {
+                            "vhost": vhost.primary_server_name,
+                            "stack": stack_result.stack,
+                            "failure": failure,
+                        }
+                    )
+            for failure in result.failures:
+                failure_occurrences.append(
+                    {
+                        "vhost": vhost.primary_server_name,
+                        "stack": None,
+                        "failure": failure,
+                    }
                 )
-            failure_notifications.extend(self._build_failure_notifications(vhost.primary_server_name, result.failures))
             results.append(result)
+        failure_notifications = self._build_failure_notifications(failure_occurrences)
         return now, results, issue_occurrences, failure_notifications
 
     def _prepare_notifications_for_delivery(self, notifications: List[NotificationEvent]) -> List[NotificationEvent]:
@@ -417,6 +469,9 @@ class CerberusScanner:
                     ]
                 )
                 for item in items:
+                    if item.get("category") == "scan-failure":
+                        lines.extend(self._scan_failure_digest_lines(item))
+                        continue
                     source_suffix = ""
                     if item["source_path"] and item["source_line"]:
                         source_suffix = " [{}:{}]".format(item["source_path"], item["source_line"])
@@ -443,8 +498,14 @@ class CerberusScanner:
                     )
                     if item.get("advisory_summary"):
                         lines.append("  Summary: {}".format(item["advisory_summary"]))
+                    if item.get("runtime_context"):
+                        lines.append("  Runtime inventory: " + runtime_description(item["runtime_context"]))
                     if item.get("affected_range"):
                         lines.append("  Affected range: {}".format(item["affected_range"]))
+                    if item.get("fix_details"):
+                        lines.append("  Repair evidence: " + fix_description(item["fix_details"]))
+                    if item.get("alert_reason"):
+                        lines.append("  Alert reason: {}".format(self._alert_reason_label(str(item["alert_reason"]))))
                     if item.get("audit_scope") == "development":
                         lines.append("  Note: development/build finding absent from npm audit --omit=dev.")
                     if item.get("fix_is_semver_major"):
@@ -469,6 +530,7 @@ class CerberusScanner:
                 "body_severity": highest,
                 "events": len(digest_items),
                 "digest_items": digest_items,
+                "decision_ids": [decision_id for event in events for decision_id in event.metadata.get("decision_ids", [])],
                 "hostname": hostname,
             },
         )
@@ -488,6 +550,8 @@ class CerberusScanner:
                         "advisory_id": finding.advisory_id,
                         "severity": severity,
                         "fixed_version": finding.fixed_version,
+                        "fix_details": finding.fix_details,
+                        "runtime_context": finding.runtime_context,
                         "affected_range": finding.affected_range,
                         "advisory_summary": finding.summary or None,
                         "source_path": finding.source_path,
@@ -511,6 +575,8 @@ class CerberusScanner:
                 "vuln_id": _clean_text(metadata.get("vuln_id", metadata.get("reason", "n/a"))),
                 "severity": _clean_text(metadata.get("severity", "UNKNOWN")).upper(),
                 "fixed_version": _clean_text(metadata.get("fixed_version", "")) or None,
+                "fix_details": metadata.get("fix_details", {}),
+                "runtime_context": metadata.get("runtime_context", {}),
                 "source_path": metadata.get("source_path"),
                 "source_line": metadata.get("source_line"),
                 "category": event.category,
@@ -520,6 +586,11 @@ class CerberusScanner:
                 "affected_range": _clean_text(metadata.get("affected_range", "")) or None,
                 "audit_scope": _clean_text(metadata.get("audit_scope", "runtime")) or "runtime",
                 "fix_is_semver_major": bool(metadata.get("fix_is_semver_major")),
+                "alert_reason": _clean_text(metadata.get("alert_reason", "new")) or "new",
+                "detail": _clean_text(metadata.get("detail", "")) or None,
+                "recommendation": metadata.get("recommendation"),
+                "aliases": list(metadata.get("aliases") or []),
+                "references": list(metadata.get("references") or []),
                 "codex_analysis": metadata.get("codex_analysis") if isinstance(metadata.get("codex_analysis"), dict) else None,
             }
             key = (
@@ -541,10 +612,20 @@ class CerberusScanner:
                 if not items[key]["affected_range"] and item["affected_range"]:
                     items[key]["affected_range"] = item["affected_range"]
                 items[key]["fix_is_semver_major"] = bool(items[key]["fix_is_semver_major"] or item["fix_is_semver_major"])
+                if item["alert_reason"] == "progressive_enrichment":
+                    items[key]["alert_reason"] = "progressive_enrichment"
+                elif item["alert_reason"] == "changed" and items[key]["alert_reason"] == "new":
+                    items[key]["alert_reason"] = "changed"
                 if not items[key].get("codex_analysis") and item.get("codex_analysis"):
                     items[key]["codex_analysis"] = item["codex_analysis"]
                 continue
-            item["affected_targets"] = [item["vhost"]]
+            affected_targets = metadata.get("affected_targets")
+            if isinstance(affected_targets, list):
+                item["affected_targets"] = sorted({_clean_text(target) for target in affected_targets if _clean_text(target)})
+            else:
+                item["affected_targets"] = [item["vhost"]]
+            if not item["affected_targets"]:
+                item["affected_targets"] = [item["vhost"]]
             items[key] = item
         return sorted(
             items.values(),
@@ -641,6 +722,15 @@ class CerberusScanner:
         return ", ".join("{} {}".format(len(items), severity) for severity, items in severity_groups) or "0 UNKNOWN"
 
     def _digest_block_recommendation(self, severity: str, items: List[Dict[str, object]]) -> str:
+        if any(item.get("runtime_context") for item in items):
+            return (
+                "verify distributor backport status for interpreter findings, update affected runtimes through "
+                "their original supplier, validate application/extension compatibility and restart affected workers; "
+                "dependency-manager updates alone do not patch the interpreter. "
+                "For application dependency findings, apply the package fixes separately."
+            )
+        if any((item.get("fix_details") or {}).get("status") == "conflicting" for item in items):
+            return "review conflicting repair sources and affected release branches before choosing an upgrade; validate application compatibility."
         categories = {str(item.get("category") or "") for item in items}
         ecosystems = {
             str(item.get("ecosystem") or "").lower()
@@ -648,6 +738,9 @@ class CerberusScanner:
             if str(item.get("ecosystem") or "").strip()
         }
         if categories == {"scan-failure"}:
+            recommendations = list(dict.fromkeys(str(item["recommendation"]) for item in items if item.get("recommendation")))
+            if recommendations:
+                return " ".join(recommendations)
             return (
                 "stabilize the failing audit commands or project trees in this block first, then rerun the scan "
                 "to confirm the failures are gone."
@@ -726,19 +819,86 @@ class CerberusScanner:
             return stack
         return "unknown stack"
 
+    def _scan_failure_digest_lines(self, item: Dict[str, object]) -> List[str]:
+        lines = [
+            "- Affected targets: {}".format(", ".join(item.get("affected_targets") or [str(item.get("vhost") or "unknown")])),
+            "  Stack / Ecosystem: {}".format(self._digest_stack_context(item)),
+            "  Component: {}".format(item.get("dependency") or "audit pipeline"),
+            "  Reason: {}".format(item.get("vuln_id") or item.get("reason") or "scan_failed"),
+            "  Severity: {}".format(item.get("severity") or "WARNING"),
+        ]
+        if item.get("advisory_summary"):
+            lines.append("  Summary: {}".format(item["advisory_summary"]))
+        if item.get("source_path"):
+            lines.append("  Evidence: {}".format(item["source_path"]))
+        detail = str(item.get("detail") or "").strip()
+        if detail:
+            lines.append("  Detail: {}".format(detail))
+        if item.get("alert_reason"):
+            lines.append("  Alert reason: {}".format(self._alert_reason_label(str(item["alert_reason"]))))
+        return lines
+
+    def _alert_reason_label(self, reason: str) -> str:
+        labels = {
+            "new": "new finding",
+            "changed": "finding changed since the previous notification",
+            "progressive_enrichment": "progressive advisory enrichment since the previous notification",
+            "forced": "forced notification",
+        }
+        return labels.get(str(reason or ""), str(reason or "unknown"))
+
     def _normalize_findings(self, occurrences: List[Dict]) -> List[NormalizedFinding]:
-        normalized = {}
+        normalized: List[NormalizedFinding] = []
+        finding_ids: Dict[int, set] = {}
+        alias_groups = {}
         for occurrence in occurrences:
             issue = occurrence["issue"]
-            canonical_id = canonical_advisory_id(issue.vulnerability.vuln_id, issue.vulnerability.aliases)
-            key = (
-                canonical_id,
-                issue.dependency.name.lower(),
-                issue.dependency.version,
-                issue.dependency.source,
+            scope = (issue.dependency.ecosystem.lower(), issue.dependency.name.lower(),
+                     issue.dependency.version, issue.dependency.source)
+            ids = set(advisory_ids_from_fields(issue.vulnerability.vuln_id,
+                      issue.vulnerability.aliases, issue.vulnerability.references))
+            ids.add(issue.vulnerability.vuln_id)
+            ids.update(issue.vulnerability.aliases)
+            groups = alias_groups.setdefault(scope, [])
+            overlapping = [group for group in groups if group & ids]
+            for group in overlapping:
+                ids.update(group)
+                groups.remove(group)
+            groups.append(ids)
+        for occurrence in occurrences:
+            issue = occurrence["issue"]
+            issue_ids = set(
+                advisory_ids_from_fields(
+                    issue.vulnerability.vuln_id,
+                    issue.vulnerability.aliases,
+                    issue.vulnerability.references,
+                )
             )
-            if key not in normalized:
-                normalized[key] = NormalizedFinding(
+            canonical_id = canonical_advisory_id(
+                issue.vulnerability.vuln_id,
+                issue.vulnerability.aliases,
+                issue.vulnerability.references,
+            )
+            issue_ids.add(canonical_id)
+            scope = (issue.dependency.ecosystem.lower(), issue.dependency.name.lower(),
+                     issue.dependency.version, issue.dependency.source)
+            for group in alias_groups[scope]:
+                if group & issue_ids:
+                    issue_ids.update(group)
+            canonical_id = canonical_advisory_id(canonical_id, sorted(issue_ids), [])
+            current = None
+            for candidate in normalized:
+                if (
+                    candidate.dependency.lower() == issue.dependency.name.lower()
+                    and candidate.ecosystem.lower() == issue.dependency.ecosystem.lower()
+                    and candidate.version == issue.dependency.version
+                    and candidate.source_path == issue.dependency.source
+                    and finding_ids.get(id(candidate), set()).intersection(issue_ids)
+                ):
+                    current = candidate
+                    break
+            if current is None:
+                finding = NormalizedFinding(
                     advisory_id=canonical_id,
                     dependency=issue.dependency.name,
                     version=issue.dependency.version,
@@ -748,6 +908,8 @@ class CerberusScanner:
                     summary=issue.vulnerability.summary,
                     details=issue.vulnerability.details,
                     fixed_version=issue.vulnerability.fixed_version,
+                    fix_details=issue.vulnerability.fix_details,
+                    runtime_context=dict(issue.runtime_context),
                     affected_range=issue.vulnerability.affected_range,
                     audit_scope=issue.vulnerability.audit_scope,
                     fix_is_semver_major=issue.vulnerability.fix_is_semver_major,
@@ -761,20 +923,37 @@ class CerberusScanner:
                         )
                     ],
                 )
+                for alias in issue_ids:
+                    if alias and alias != finding.advisory_id and alias not in finding.aliases:
+                        finding.aliases.append(alias)
+                normalized.append(finding)
+                finding_ids[id(finding)] = issue_ids | {finding.advisory_id}
                 continue
-            current = normalized[key]
+            finding_ids[id(current)].update(issue_ids)
+            current.advisory_id = canonical_advisory_id(
+                current.advisory_id,
+                current.aliases + issue.vulnerability.aliases,
+                current.references + issue.vulnerability.references,
+            )
             current.severity = strongest_severity(current.severity, issue.vulnerability.severity)
+            if not current.runtime_context and issue.runtime_context:
+                current.runtime_context = dict(issue.runtime_context)
             if len(issue.vulnerability.summary or "") > len(current.summary or ""):
                 current.summary = issue.vulnerability.summary
             if len(issue.vulnerability.details or "") > len(current.details or ""):
                 current.details = issue.vulnerability.details
             current.fixed_version = merge_fixed_versions(current.fixed_version, issue.vulnerability.fixed_version)
+            if issue.vulnerability.fix_details:
+                current.fix_details = issue.vulnerability.fix_details
             current.affected_range = current.affected_range or issue.vulnerability.affected_range
             if issue.vulnerability.audit_scope == "runtime":
                 current.audit_scope = "runtime"
             current.fix_is_semver_major = current.fix_is_semver_major or issue.vulnerability.fix_is_semver_major
             for alias in issue.vulnerability.aliases:
                 if alias and alias not in current.aliases:
+                    current.aliases.append(alias)
+            for alias in issue_ids:
+                if alias and alias != current.advisory_id and alias not in current.aliases:
                     current.aliases.append(alias)
             for reference in issue.vulnerability.references:
                 if reference and reference not in current.references:
@@ -785,12 +964,12 @@ class CerberusScanner:
                 source_line=issue.dependency.source_line,
             )
             if not any(
-                existing.vhost == projection.vhost and existing.stack == projection.stack and existing.source_line == projection.source_line
+                existing.vhost == projection.vhost and existing.stack == projection.stack
                 for existing in current.projections
             ):
                 current.projections.append(projection)
         return sorted(
-            normalized.values(),
+            normalized,
             key=lambda item: (
                 -SEVERITY_ORDER.get(item.severity, -1),
                 item.advisory_id,
@@ -812,10 +991,12 @@ class CerberusScanner:
             severity = normalize_severity(finding.severity)
             base_analysis_payload = {
                 "dependency": finding.dependency,
+                "runtime_context": finding.runtime_context,
                 "version": finding.version,
                 "advisory_id": finding.advisory_id,
                 "severity": severity,
                 "fixed_version": finding.fixed_version,
+                "fix_details": finding.fix_details,
                 "affected_range": finding.affected_range,
                 "advisory_summary": finding.summary,
                 "source_path": finding.source_path,
@@ -823,16 +1004,6 @@ class CerberusScanner:
                 "audit_scope": finding.audit_scope,
                 "affected_targets": sorted({projection.vhost for projection in finding.projections}),
             }
-            codex_analysis = None
-            if self.codex_analyzer:
-                analysis_payload = dict(base_analysis_payload)
-                analysis_payload.update(
-                    {
-                        "stack": finding.projections[0].stack if finding.projections else "",
-                        "source_line": finding.projections[0].source_line if finding.projections else None,
-                    }
-                )
-                codex_analysis = self.codex_analyzer.analyze(analysis_payload)
             recommendation = build_recommendation(
                 ecosystem=finding.ecosystem,
                 stack=finding.projections[0].stack,
@@ -843,15 +1014,20 @@ class CerberusScanner:
                 audit_scope=finding.audit_scope,
                 fix_is_semver_major=finding.fix_is_semver_major,
             )
+            if finding.fix_details.get("status") == "conflicting":
+                recommendation = "review conflicting repair sources and affected release branches before choosing an upgrade."
+            pending = []
             for projection in finding.projections:
                 payload = {
                     "vhost": projection.vhost,
+                    "runtime_context": finding.runtime_context,
                     "stack": projection.stack,
                     "dependency": finding.dependency,
                     "version": finding.version,
                     "vuln_id": finding.advisory_id,
                     "severity": severity,
                     "fixed_version": finding.fixed_version,
+                    "fix_details": finding.fix_details,
                     "affected_range": finding.affected_range,
                     "advisory_summary": finding.summary,
                     "source_path": finding.source_path,
@@ -859,9 +1035,9 @@ class CerberusScanner:
                     "ecosystem": finding.ecosystem,
                     "audit_scope": finding.audit_scope,
                     "fix_is_semver_major": finding.fix_is_semver_major,
+                    "aliases": list(finding.aliases),
+                    "references": list(finding.references),
                 }
-                if codex_analysis and codex_analysis.get("analysis_status") in {"completed", "insufficient_context"}:
-                    payload["codex_analysis"] = codex_analysis
                 fingerprint = "issue:{}:{}:{}:{}:{}:{}".format(
                     projection.vhost,
                     projection.stack,
@@ -870,8 +1046,30 @@ class CerberusScanner:
                     finding.advisory_id,
                     finding.source_path,
                 )
-                if not force_notify and not self.state.should_alert(fingerprint, payload):
-                    continue
+                alert_reason = "forced" if force_notify else "new"
+                if not force_notify:
+                    should_alert, alert_reason = self.state.alert_decision(fingerprint, payload)
+                    if not should_alert:
+                        continue
+                else:
+                    self.state.record_forced_decision(fingerprint, payload)
+                payload["alert_reason"] = alert_reason
+                payload["decision_ids"] = [self.state.decision_ids[fingerprint]]
+                pending.append((projection, payload, fingerprint))
+            codex_analysis = None
+            if pending and self.codex_analyzer:
+                analysis_payload = dict(base_analysis_payload)
+                analysis_payload.update(
+                    {
+                        "stack": pending[0][0].stack,
+                        "source_line": pending[0][0].source_line,
+                        "affected_targets": sorted({item[0].vhost for item in pending}),
+                    }
+                )
+                codex_analysis = self.codex_analyzer.analyze(analysis_payload)
+            for projection, payload, fingerprint in pending:
+                if self._should_include_codex_analysis(codex_analysis):
+                    payload["codex_analysis"] = codex_analysis
                 fixed_line = (
                     "Fixed version: {}".format(finding.fixed_version)
                     if finding.fixed_version
@@ -890,19 +1088,23 @@ class CerberusScanner:
                     f"Dependency: {finding.dependency}",
                     f"Detected version: {finding.version}",
                     fixed_line,
+                    "Repair evidence: {}".format(fix_description(finding.fix_details) or "not collected"),
                     "Source file: {}".format(finding.source_path),
                     "Source line: {}".format(projection.source_line if projection.source_line else "unknown"),
                     f"CVE / Advisory: {finding.advisory_id}",
                     f"Severity: {severity}",
                     "Audit scope: {}".format(finding.audit_scope),
+                    "Alert reason: {}".format(self._alert_reason_label(alert_reason)),
                     "Summary: {}".format(finding.summary or "No summary provided by upstream advisory sources."),
                     "Recommendation: {}".format(recommendation),
                 ]
                 if finding.audit_scope == "development":
                     body_lines.append("Note: development/build finding absent from npm audit --omit=dev.")
+                if finding.runtime_context:
+                    body_lines.append("Runtime inventory: " + runtime_description(finding.runtime_context))
                 if finding.fix_is_semver_major:
                     body_lines.append("Risk: npm marks the available fix as semver-major; review breakage before applying it.")
-                if codex_analysis and codex_analysis.get("analysis_status") in {"completed", "insufficient_context"}:
+                if self._should_include_codex_analysis(codex_analysis):
                     body_lines.extend(["", *self._codex_analysis_text_lines(codex_analysis)])
                 if affected_line:
                     body_lines.insert(7, affected_line)
@@ -924,7 +1126,34 @@ class CerberusScanner:
                 )
         return notifications
 
+    def _should_include_codex_analysis(self, analysis: object) -> bool:
+        if not isinstance(analysis, dict):
+            return False
+        status = str(analysis.get("analysis_status") or "")
+        if status in {"completed", "insufficient_context"}:
+            return True
+        settings = self.config.get("codex_analysis") or {}
+        if not bool(settings.get("include_failure_diagnostics", False)):
+            return False
+        return status in {
+            "unavailable",
+            "timed_out",
+            "non_zero_exit",
+            "invalid_output",
+            "schema_invalid",
+            "oversized_output",
+            "missing_repository",
+        }
+
     def _codex_analysis_text_lines(self, analysis: Dict[str, object]) -> List[str]:
+        status = str(analysis.get("analysis_status") or "unknown")
+        if status not in {"completed", "insufficient_context"}:
+            return [
+                "Codex triage report: AI-assisted static analysis",
+                "Analysis status: {}".format(status),
+                "Result: Codex analysis was attempted, but no validated report was available.",
+                "Diagnostic: {}".format(analysis.get("reason") or "no diagnostic detail available"),
+            ]
         confidence = analysis.get("confidence")
         confidence_text = "unknown"
         if isinstance(confidence, (int, float)):
@@ -933,71 +1162,186 @@ class CerberusScanner:
         recommendations = analysis.get("recommendations") if isinstance(analysis.get("recommendations"), list) else []
         limitations = analysis.get("limitations") if isinstance(analysis.get("limitations"), list) else []
         lines = [
-            "Contextual analysis: AI-assisted static analysis",
+            "Codex triage report: AI-assisted static analysis",
+            "Verdict: {}".format(analysis.get("operator_summary") or analysis.get("summary") or "No operator summary provided."),
+            "Current environment: {}".format(analysis.get("environment_assessment") or "No environment assessment provided."),
             "Official advisory severity: {}".format(analysis.get("advisory_severity") or "UNKNOWN"),
             "Estimated contextual risk: {}".format(analysis.get("contextual_risk") or "UNKNOWN"),
+            "Exposure: {}".format(self._codex_label(analysis.get("exposure") or "unknown")),
+            "Impact: {}".format(self._codex_label(analysis.get("impact") or "unknown")),
+            "Action priority: {}".format(self._codex_label(analysis.get("action_priority") or "unknown")),
             "Confidence: {}".format(confidence_text),
             "Analysis status: {}".format(analysis.get("analysis_status") or "unknown"),
             "Dependency scope: {}".format(analysis.get("dependency_scope") or "unknown"),
             "Reachability: {}".format(reachability.get("status") or "unknown"),
             "Attacker-controlled input observed: {}".format(str(bool(reachability.get("attacker_controlled_input"))).lower()),
-            "Analysis summary: {}".format(analysis.get("summary") or "No contextual summary provided."),
+            "Why: {}".format(analysis.get("risk_rationale") or analysis.get("summary") or "No risk rationale provided."),
         ]
         if reachability.get("explanation"):
             lines.append("Reachability explanation: {}".format(reachability.get("explanation")))
         if analysis.get("likely_impact"):
             lines.append("Likely impact: {}".format(analysis.get("likely_impact")))
         if recommendations:
-            lines.append("Recommended action: {}".format(recommendations[0].get("action", "review manually")))
+            actions = [
+                str(item.get("action"))
+                for item in recommendations[:3]
+                if isinstance(item, dict) and str(item.get("action") or "").strip()
+            ]
+            if actions:
+                lines.append("What to do: {}".format("; ".join(actions)))
         if limitations:
             lines.append("Limitations: {}".format("; ".join(str(item) for item in limitations[:3])))
         return lines
 
-    def _build_failure_notifications(self, scope: str, failures: List[ScanFailure]) -> List[NotificationEvent]:
+    def _codex_label(self, value: object) -> str:
+        return str(value or "unknown").replace("_", " ")
+
+    def _build_failure_notifications(self, occurrences: List[Dict[str, object]]) -> List[NotificationEvent]:
         notifications = []
         hostname = socket.gethostname()
         now = datetime.now(timezone.utc)
-        for failure in failures:
+        grouped: Dict[Tuple[str, str, str, str], Dict[str, object]] = {}
+        for occurrence in occurrences:
+            failure = occurrence.get("failure")
+            if not isinstance(failure, ScanFailure):
+                continue
+            stack = occurrence.get("stack")
+            stack_name = stack.stack_name if isinstance(stack, StackMatch) else failure.scope
+            root_path = stack.root_path if isinstance(stack, StackMatch) and stack.root_path else None
+            key = (
+                stack_name,
+                root_path or "",
+                failure.reason,
+                failure.detail or "",
+            )
+            item = grouped.setdefault(
+                key,
+                {
+                    "stack": stack_name,
+                    "ecosystem": self._ecosystem_for_stack(stack_name),
+                    "root_path": root_path,
+                    "reason": failure.reason,
+                    "detail": failure.detail or "",
+                    "targets": set(),
+                },
+            )
+            item["targets"].add(str(occurrence.get("vhost") or "unknown"))
+        for item in grouped.values():
             severity = normalize_severity("warning", category="scan-failure")
+            targets = sorted(item["targets"])
+            stack_name = str(item["stack"] or "unknown")
+            ecosystem = str(item["ecosystem"] or "unknown")
+            root_path = str(item["root_path"] or "")
+            reason = str(item["reason"] or "scan_failed")
+            detail = str(item["detail"] or "")
             payload = {
-                "scope": scope,
-                "reason": failure.reason,
-                "detail": failure.detail,
+                "scope": root_path or ",".join(targets),
+                "vhost": targets[0] if targets else "unknown",
+                "affected_targets": targets,
+                "stack": stack_name,
+                "ecosystem": ecosystem,
+                "reason": reason,
+                "detail": detail,
+                "dependency": "stack discovery" if reason == "stack_not_detected" else "audit pipeline",
+                "version": "n/a",
+                "vuln_id": reason,
+                "source_path": root_path or None,
+                "source_line": None,
+                "audit_scope": "scanner",
+                "advisory_summary": self._failure_summary(reason, stack_name, root_path),
+                "recommendation": self._failure_recommendation(reason, stack_name),
                 "severity": severity,
             }
+            failure_scope = "scan-failure:{}:{}:{}".format(stack_name, root_path or ",".join(targets), reason)
             repeated = self.state.register_failure(
-                scope=f"{scope}:{failure.scope}:{failure.reason}",
+                scope=failure_scope,
                 detail=payload,
                 threshold=self.failure_threshold,
             )
             if not repeated:
                 continue
+            payload["decision_ids"] = [self.state.decision_ids[failure_scope]]
             body = "\n".join(
                 [
                     f"Hostname: {hostname}",
                     f"Date: {now.isoformat()}",
-                    f"Vhost: {scope}",
-                    f"Stack: {failure.scope}",
-                    f"Component: scan pipeline",
-                    f"Detected version: unknown",
-                    f"CVE / Advisory: n/a",
+                    f"Affected targets: {', '.join(targets)}",
+                    f"Stack: {stack_name}",
+                    f"Ecosystem: {ecosystem}",
+                    f"Component: {payload['dependency']}",
+                    f"Reason: {reason}",
                     f"Severity: {severity}",
-                    f"Summary: repeated scan failure",
-                    f"Recommendation: inspect logs and fix the audit environment or the broken project tree.",
-                    f"Detail: {failure.reason} {failure.detail or ''}".strip(),
+                    f"Summary: {payload['advisory_summary']}",
+                    f"Evidence: {root_path or 'unknown'}",
+                    f"Recommendation: {self._failure_recommendation(reason, stack_name)}",
+                    f"Detail: {detail or 'no command output captured'}",
                 ]
             )
             notifications.append(
                 NotificationEvent(
                     category="scan-failure",
-                    fingerprint=f"failure:{scope}:{failure.scope}:{failure.reason}",
-                    subject=f"[Cerberus][{severity}][{hostname}] {scope} repeated scan failure: {failure.reason}",
+                    fingerprint="failure:{}:{}:{}".format(stack_name, root_path or ",".join(targets), reason),
+                    subject="[Cerberus][{}][{}] {} {} failure".format(severity, hostname, stack_name, payload["dependency"]),
                     body=body,
                     created_at=now,
                     metadata=payload,
                 )
             )
         return notifications
+
+    @staticmethod
+    def _ecosystem_for_stack(stack_name: str) -> str:
+        mapping = {
+            "nodejs": "npm",
+            "python": "PyPI",
+            "php-composer": "Packagist",
+            "gitea": "Gitea",
+            "go": "Go",
+            "cargo": "crates.io",
+        }
+        return mapping.get(str(stack_name or "").lower(), "unknown")
+
+    @staticmethod
+    def _failure_summary(reason: str, stack_name: str, root_path: str) -> str:
+        if reason.startswith("runtime_"):
+            return "Runtime vulnerability coverage is incomplete; this is not a clean security result."
+        if reason.endswith("_audit_unavailable"):
+            return "Native dependency audit was not run: required tooling or manifest is unavailable for {}{}; coverage is incomplete.".format(stack_name, " at " + root_path if root_path else "")
+        if reason == "stack_not_detected":
+            return "No application project could be identified for this target; dependency auditing could not start."
+        command = {
+            "npm_audit_failed": "npm audit --json --omit=dev",
+            "npm_full_audit_failed": "npm audit --json",
+            "composer_audit_failed": "composer audit",
+            "pip_audit_failed": "pip-audit",
+        }.get(reason, "audit command")
+        location = " at {}".format(root_path) if root_path else ""
+        return "{} failed for {}{}".format(command, stack_name, location)
+
+    @staticmethod
+    def _failure_recommendation(reason: str, stack_name: str) -> str:
+        if reason.startswith("runtime_"):
+            return "verify the backend executable association and distributor advisory availability; configure a runtime binding for stopped/remote backends and resolve unsupported ranges before relying on coverage."
+        if reason == "pip_audit_unavailable":
+            return "make pip-audit available in the Cerberus service PATH and verify the requirements file; local advisory matching does not replace a successful native audit."
+        if reason == "npm_audit_unavailable":
+            return "verify npm availability and restore the project's reviewed lockfile before rerunning the native audit; do not blindly update production dependencies."
+        if reason == "composer_audit_unavailable":
+            return "verify Composer availability and the project's composer.lock, then rerun the native audit."
+        if reason == "stack_not_detected":
+            return "check the nginx upstream, listening process, private mount mappings, readable project manifests and allowed root hints, then rerun explain-vhost."
+        if reason in {"npm_audit_failed", "npm_full_audit_failed"}:
+            return (
+                "rerun the failing npm audit command in the project root, check registry/network latency or lockfile "
+                "health, then rerun Cerberus once the command is stable."
+            )
+        if reason == "composer_audit_failed":
+            return "rerun Composer audit in the project root and fix Composer, network, or lockfile errors before relying on the scan."
+        if reason == "pip_audit_failed":
+            return "rerun pip-audit for the detected Python environment and fix environment or requirements issues before relying on the scan."
+        if stack_name == "unknown":
+            return "inspect the vhost and Cerberus logs to decide whether this target should be scanned or filtered."
+        return "inspect Cerberus logs and fix the scanner environment or project tree, then rerun the scan."
 
     def report_internal_error(self, operation: str, error: BaseException) -> Optional[NotificationEvent]:
         hostname = socket.gethostname()
@@ -1043,7 +1387,7 @@ class CerberusScanner:
         for notification in self._prepare_notifications_for_delivery([event]):
             LOGGER.info("Sending %s notification: %s", notification.category, notification.subject)
             try:
-                self.mailer.send(notification)
+                self._send_notification(notification)
             except NotificationDeliveryError as delivery_error:
                 LOGGER.error(
                     "Unable to send internal-error notification during %s: %s",
@@ -1200,7 +1544,7 @@ class CerberusScanner:
                 "advisory_summary": advisory_summary if category == "vulnerability" else None,
             },
         )
-        self.mailer.send(event)
+        self._send_notification(event)
         return event
 
     def daemon_loop(self) -> None:

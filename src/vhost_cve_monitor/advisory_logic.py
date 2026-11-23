@@ -15,6 +15,8 @@ SEVERITY_ORDER = {
 }
 
 STANDARD_VULN_RE = re.compile(r"(GHSA-[A-Za-z0-9-]+|CVE-\d{4}-\d+)")
+CVE_RE = re.compile(r"CVE-\d{4}-\d+")
+GHSA_RE = re.compile(r"GHSA-[A-Za-z0-9-]+")
 SIMPLE_UPPER_BOUND_RE = re.compile(r"^\s*<?=?\s*v?([0-9][A-Za-z0-9._-]*)\s*$")
 CVSS_VECTOR_RE = re.compile(r"^CVSS:(3\.[01])/([A-Z]{1,3}:[A-Z0-9]/?)+$")
 
@@ -118,13 +120,40 @@ def _cvss_v3_base_score(vector: str) -> Optional[float]:
         return None
 
 
-def canonical_advisory_id(vuln_id: str, aliases: Optional[Sequence[str]] = None) -> str:
+def advisory_ids_from_fields(
+    vuln_id: str,
+    aliases: Optional[Sequence[str]] = None,
+    references: Optional[Sequence[str]] = None,
+) -> List[str]:
+    candidates = [str(vuln_id or "").strip()]
+    candidates.extend(str(alias or "").strip() for alias in aliases or [])
+    candidates.extend(str(reference or "").strip() for reference in references or [])
+    ids: List[str] = []
+    for pattern in (CVE_RE, GHSA_RE):
+        for candidate in candidates:
+            for match in pattern.findall(candidate):
+                if match not in ids:
+                    ids.append(match)
+    return ids
+
+
+def canonical_advisory_id(
+    vuln_id: str,
+    aliases: Optional[Sequence[str]] = None,
+    references: Optional[Sequence[str]] = None,
+) -> str:
+    ids = advisory_ids_from_fields(vuln_id, aliases, references)
+    for pattern in (CVE_RE, GHSA_RE):
+        for candidate in ids:
+            match = pattern.search(candidate)
+            if match:
+                return match.group(0)
     candidates = [str(vuln_id or "").strip()] + [str(alias).strip() for alias in aliases or []]
     for candidate in candidates:
         match = STANDARD_VULN_RE.search(candidate)
         if match:
             return match.group(1)
-    for candidate in candidates:
+    for candidate in ids:
         if candidate:
             return candidate
     return "UNKNOWN-ADVISORY"
@@ -136,7 +165,7 @@ def infer_first_safe_from_range(affected_range: str) -> Optional[str]:
     parts = [part.strip() for part in str(affected_range).split("||")]
     first_safe = []
     for part in parts:
-        if "<" not in part or ">=" in part or ">" in part:
+        if "<" not in part or "<=" in part or ">=" in part or ">" in part:
             continue
         candidate = part.replace("<=", "").replace("<", "").strip()
         match = SIMPLE_UPPER_BOUND_RE.match(candidate)
@@ -194,6 +223,10 @@ def build_recommendation(
     audit_scope: str = "runtime",
     fix_is_semver_major: bool = False,
 ) -> str:
+    if str(stack).endswith("-runtime") or str(ecosystem).startswith("Debian:"):
+        target = " Install the vendor-fixed version {}.".format(fixed_version) if fixed_version else " No fixed version is known from the queried source."
+        return ("Update the affected runtime through its original distributor or a verified upstream build."
+                + target + " Check application and extension compatibility, restart affected workers, and verify the running binary; dependency-manager updates alone do not patch the interpreter.")
     safe_target = fixed_version or infer_first_safe_from_range(affected_range)
     ecosystem_name = str(ecosystem or "").lower()
     scope_name = str(audit_scope or "runtime").lower()

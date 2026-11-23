@@ -1,6 +1,8 @@
 import os
 import socket
 import sys
+from dataclasses import replace
+from itertools import permutations
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -96,6 +98,93 @@ class ScannerFindingsTestCase(unittest.TestCase):
             digest.body,
         )
         self.assertIn("  [MEDIUM] nth-check 1.0.2 -> fixed in >= 2.0.1 | GHSA-rp65-9cf3-cjxr", digest.body)
+
+    def test_cve_and_ghsa_alias_variants_merge_into_one_finding(self) -> None:
+        scanner = CerberusScanner(config=self.config, dry_run=True, allow_network=False)
+        dependency = Dependency(
+            ecosystem="PyPI",
+            name="python-multipart",
+            version="0.0.22",
+            source="/srv/app/requirements.txt",
+            source_line=5,
+        )
+        cve_vuln = Vulnerability(
+            vuln_id="CVE-2026-53539",
+            source="OSV",
+            severity="HIGH",
+            summary="Quadratic-time querystring parsing",
+            details="",
+            published=None,
+            modified=None,
+            package_name=dependency.name,
+            ecosystem=dependency.ecosystem,
+            affected_version=dependency.version,
+            fixed_version=">= 0.0.30",
+            aliases=["CVE-2026-53539"],
+            references=["https://github.com/Kludex/python-multipart/security/advisories/GHSA-5rvq-cxj2-64vf"],
+        )
+        ghsa_vuln = Vulnerability(
+            vuln_id="GHSA-5rvq-cxj2-64vf",
+            source="pip-audit",
+            severity="UNKNOWN",
+            summary="python-multipart querystring DoS",
+            details="",
+            published=None,
+            modified=None,
+            package_name=dependency.name,
+            ecosystem=dependency.ecosystem,
+            affected_version=dependency.version,
+            fixed_version=None,
+            aliases=["GHSA-5rvq-cxj2-64vf"],
+            references=["https://github.com/advisories/GHSA-5rvq-cxj2-64vf"],
+        )
+        occurrences = [
+            {"vhost": "domain.tld", "stack": "python", "issue": AuditIssue(dependency, cve_vuln, "osv-cache")},
+            {"vhost": "domain.tld", "stack": "python", "issue": AuditIssue(dependency, ghsa_vuln, "pip-audit")},
+            {"vhost": "admin.domain.tld", "stack": "python", "issue": AuditIssue(dependency, cve_vuln, "osv-cache")},
+            {"vhost": "admin.domain.tld", "stack": "python", "issue": AuditIssue(dependency, ghsa_vuln, "pip-audit")},
+        ]
+
+        notifications = scanner._build_issue_notifications(occurrences)
+        digest = scanner._build_digest_notification(notifications, subject_all=True)
+
+        self.assertEqual(len(notifications), 2)
+        self.assertTrue(all(item.metadata["vuln_id"] == "CVE-2026-53539" for item in notifications))
+        self.assertTrue(all(item.metadata["severity"] == "HIGH" for item in notifications))
+        self.assertIn("[Cerberus][HIGH][{}] 1 alerts".format(socket.gethostname()), digest.subject)
+        self.assertIn("Breakdown: 1 HIGH", digest.body)
+        self.assertIn("Affected targets: admin.domain.tld, domain.tld", digest.body)
+        self.assertEqual(digest.body.count("CVE-2026-53539"), 1)
+        self.assertNotIn("GHSA-5rvq-cxj2-64vf", digest.body)
+
+    def test_late_alias_bridge_is_order_independent_and_preserves_targets(self) -> None:
+        scanner = CerberusScanner(config=self.config, dry_run=True, allow_network=False)
+        dependency = Dependency(ecosystem="npm", name="sample", version="1.0",
+                                source="/srv/app/package-lock.json", source_line=10)
+        ghsa = Vulnerability(vuln_id="GHSA-aaaa-bbbb-cccc", source="audit", severity="HIGH",
+                             summary="Issue", details="", published=None, modified=None,
+                             package_name="sample", ecosystem="npm", affected_version="1.0",
+                             aliases=[], references=[])
+        cve = replace(ghsa, vuln_id="CVE-2026-12345", severity="UNKNOWN")
+        bridge = replace(cve, aliases=[ghsa.vuln_id])
+        occurrences = [
+            {"vhost": "app.example.net", "stack": "nodejs", "issue": AuditIssue(dependency, ghsa, "audit")},
+            {"vhost": "admin.example.net", "stack": "nodejs", "issue": AuditIssue(dependency, cve, "cache")},
+            {"vhost": "app.example.net", "stack": "nodejs", "issue": AuditIssue(replace(dependency, source_line=30), bridge, "cache")},
+        ]
+        for order in permutations(occurrences):
+            normalized = scanner._normalize_findings(list(order))
+            self.assertEqual(len(normalized), 1)
+            self.assertEqual(normalized[0].severity, "HIGH")
+            self.assertEqual(len(normalized[0].projections), 2)
+        notifications = scanner._build_issue_notifications(occurrences)
+        self.assertEqual(len(notifications), 2)
+        digest = scanner._build_digest_notification(notifications, subject_all=True)
+        self.assertIn("1 alerts", digest.subject)
+        self.assertIn("admin.example.net, app.example.net", digest.body)
+        self.assertEqual(scanner._build_issue_notifications(occurrences), [])
+        scanner.state.replace_current_findings(scanner._current_findings_snapshot(occurrences), '2026-01-01T00:00:00+00:00')
+        self.assertEqual(scanner.state.export_current_findings()['findings_count'], 2)
 
     def test_single_alert_subject_is_compact_and_includes_fixed_version_and_recommendation(self) -> None:
         scanner = CerberusScanner(config=self.config, dry_run=True, allow_network=False)
@@ -226,6 +315,12 @@ class ScannerFindingsTestCase(unittest.TestCase):
                     "dependency_path": ["application", finding["dependency"]],
                     "advisory_severity": "HIGH",
                     "contextual_risk": "LOW",
+                    "exposure": "not_observed",
+                    "impact": "denial_of_service",
+                    "action_priority": "scheduled",
+                    "operator_summary": "Low contextual risk: no attacker-controlled reachable path was observed.",
+                    "environment_assessment": "The package is installed, but only non-public code paths were observed.",
+                    "risk_rationale": "No attacker-controlled path to the vulnerable function was found in the scanned source.",
                     "confidence": 0.82,
                     "reachability": {
                         "status": "not_observed",
@@ -279,6 +374,77 @@ class ScannerFindingsTestCase(unittest.TestCase):
         self.assertEqual(notifications[0].metadata["codex_analysis"]["contextual_risk"], "LOW")
         self.assertIn("Official advisory severity: HIGH", notifications[0].body)
         self.assertIn("Estimated contextual risk: LOW", notifications[0].body)
+        self.assertIn("Current environment:", notifications[0].body)
+
+    def test_codex_failure_diagnostic_can_be_rendered(self) -> None:
+        scanner = CerberusScanner(config=self.config, dry_run=True, allow_network=False)
+        scanner.config.setdefault("codex_analysis", {})["include_failure_diagnostics"] = True
+
+        class FailingAnalyzer:
+            def analyze(self, finding):
+                return {"analysis_status": "schema_invalid", "reason": "Codex output failed validation"}
+
+        scanner.codex_analyzer = FailingAnalyzer()
+        dependency = Dependency("npm", "lodash", "4.17.23", "/srv/example/package-lock.json", 42)
+        vulnerability = Vulnerability(
+            vuln_id="GHSA-35jh-r3h4-6jhm",
+            source="runtime-audit",
+            severity="HIGH",
+            summary="Prototype pollution in lodash",
+            details="",
+            published=None,
+            modified=None,
+            package_name=dependency.name,
+            ecosystem=dependency.ecosystem,
+            affected_version=dependency.version,
+            fixed_version=">= 4.17.24",
+            aliases=[],
+            references=[],
+        )
+
+        notifications = scanner._build_issue_notifications(
+            [{"vhost": "app.example.net", "stack": "nodejs", "issue": AuditIssue(dependency, vulnerability, "npm-audit")}]
+        )
+
+        self.assertEqual(notifications[0].metadata["codex_analysis"]["analysis_status"], "schema_invalid")
+        self.assertIn("Codex analysis was attempted", notifications[0].body)
+
+    def test_codex_analysis_is_not_invoked_for_unchanged_suppressed_findings(self) -> None:
+        scanner = CerberusScanner(config=self.config, dry_run=True, allow_network=False)
+
+        class CountingAnalyzer:
+            def __init__(self):
+                self.calls = 0
+
+            def analyze(self, finding):
+                self.calls += 1
+                return {"analysis_status": "schema_invalid", "reason": "should not matter"}
+
+        analyzer = CountingAnalyzer()
+        scanner.codex_analyzer = analyzer
+        dependency = Dependency("npm", "lodash", "4.17.23", "/srv/example/package-lock.json", 42)
+        vulnerability = Vulnerability(
+            vuln_id="GHSA-35jh-r3h4-6jhm",
+            source="runtime-audit",
+            severity="HIGH",
+            summary="Prototype pollution in lodash",
+            details="",
+            published=None,
+            modified=None,
+            package_name=dependency.name,
+            ecosystem=dependency.ecosystem,
+            affected_version=dependency.version,
+            fixed_version=">= 4.17.24",
+            aliases=[],
+            references=[],
+        )
+        occurrences = [
+            {"vhost": "app.example.net", "stack": "nodejs", "issue": AuditIssue(dependency, vulnerability, "npm-audit")}
+        ]
+
+        self.assertEqual(len(scanner._build_issue_notifications(occurrences)), 1)
+        self.assertEqual(len(scanner._build_issue_notifications(occurrences)), 0)
+        self.assertEqual(analyzer.calls, 1)
 
 
 if __name__ == "__main__":

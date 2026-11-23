@@ -28,6 +28,21 @@ fi
 "${VENV_DIR}/bin/python" -m pip install --upgrade pip
 "${VENV_DIR}/bin/python" -m pip install --upgrade "$PROJECT_DIR"
 
+"${VENV_DIR}/bin/python" - "$PROJECT_DIR" <<'PY'
+import pathlib
+import sys
+import vhost_cve_monitor
+source = pathlib.Path(sys.argv[1]) / "src" / "vhost_cve_monitor"
+installed = pathlib.Path(vhost_cve_monitor.__file__).resolve().parent
+if pathlib.Path(sys.prefix).resolve() not in installed.parents:
+    raise SystemExit("Cerberus import is outside its virtual environment")
+for path in source.rglob("*.py"):
+    target = installed / path.relative_to(source)
+    if not target.is_file() or path.read_bytes() != target.read_bytes():
+        raise SystemExit("Installed/source mismatch: " + str(path.relative_to(source)))
+print("Installed Python modules verified against source:", installed)
+PY
+
 install -m 0755 "${PROJECT_DIR}/packaging/scripts/testmail" "$TESTMAIL_BIN"
 
 cat > "${WRAPPER_DIR}/vhost-cve-monitor" <<EOF
@@ -55,8 +70,11 @@ install -m 0644 "${PROJECT_DIR}/packaging/systemd/vhost-cve-monitor.timer" "$SYS
 install -m 0644 "${PROJECT_DIR}/packaging/systemd/vhost-cve-monitor-cve-sync.service" "$SYSTEMD_DIR/vhost-cve-monitor-cve-sync.service"
 install -m 0644 "${PROJECT_DIR}/packaging/systemd/vhost-cve-monitor-cve-sync.timer" "$SYSTEMD_DIR/vhost-cve-monitor-cve-sync.timer"
 
+"${VENV_DIR}/bin/python" -m vhost_cve_monitor.systemd_codex --config "$CONFIG_DIR/config.yml" --systemd-dir "$SYSTEMD_DIR"
 systemctl daemon-reload
-systemctl enable --now vhost-cve-monitor.timer
-systemctl enable --now vhost-cve-monitor-cve-sync.timer
+if [ "${ENABLE_TIMERS:-1}" = "1" ]; then
+  systemctl enable --now vhost-cve-monitor.timer
+  systemctl enable --now vhost-cve-monitor-cve-sync.timer
+fi
 
 echo "Installation completed."

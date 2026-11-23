@@ -26,6 +26,7 @@ class VhostConfig:
     uwsgi_passes: List[str] = field(default_factory=list)
     upstream_paths: List[str] = field(default_factory=list)
     locations: List[NginxLocation] = field(default_factory=list)
+    php_script_paths: List[str] = field(default_factory=list)
 
     @property
     def is_redirect_only(self) -> bool:
@@ -73,6 +74,7 @@ class Vulnerability:
     ecosystem: str
     affected_version: str
     fixed_version: Optional[str] = None
+    fix_details: dict = field(default_factory=dict)
     affected_range: Optional[str] = None
     audit_scope: str = "runtime"
     fix_is_semver_major: bool = False
@@ -85,6 +87,7 @@ class AuditIssue:
     dependency: Dependency
     vulnerability: Vulnerability
     detection_method: str
+    runtime_context: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass

@@ -6,6 +6,7 @@ import unittest
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(__file__)), "src"))
 
 from vhost_cve_monitor.notify import Mailer
+from vhost_cve_monitor.models import ScanFailure, StackMatch
 from vhost_cve_monitor.scanner import CerberusScanner
 
 
@@ -118,6 +119,40 @@ class ScannerTestMailTestCase(unittest.TestCase):
 
         self.assertIsNotNone(first)
         self.assertIsNone(second)
+
+    def test_scan_failures_are_grouped_by_project_and_rendered_as_pipeline_failures(self) -> None:
+        self.config["scanner"]["repeated_failure_threshold"] = 1
+        scanner = CerberusScanner(config=self.config, dry_run=True, allow_network=False)
+        stack = StackMatch(
+            stack_name="nodejs",
+            confidence="high",
+            reasons=["package-lock.json"],
+            root_path="/srv/app",
+        )
+
+        notifications = scanner._build_failure_notifications(
+            [
+                {
+                    "vhost": "app.domain.tld",
+                    "stack": stack,
+                    "failure": ScanFailure(scope="nodejs", reason="npm_audit_failed", detail="timed out"),
+                },
+                {
+                    "vhost": "admin.domain.tld",
+                    "stack": stack,
+                    "failure": ScanFailure(scope="nodejs", reason="npm_audit_failed", detail="timed out"),
+                },
+            ]
+        )
+
+        self.assertEqual(len(notifications), 1)
+        event = scanner._build_digest_notification(notifications)
+        self.assertIn("Affected targets: admin.domain.tld, app.domain.tld", event.body)
+        self.assertIn("Stack / Ecosystem: nodejs / npm", event.body)
+        self.assertIn("Component: audit pipeline", event.body)
+        self.assertIn("Reason: npm_audit_failed", event.body)
+        self.assertIn("Evidence: /srv/app", event.body)
+        self.assertNotIn("Package\nscan-pipeline", event.body)
 
 
 if __name__ == "__main__":

@@ -10,6 +10,26 @@ from vhost_cve_monitor.nginx_parser import parse_nginx_file
 
 
 class NginxParserTestCase(unittest.TestCase):
+    def test_catchall_redirect_with_acme_is_not_application(self):
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "site.conf"
+            path.write_text('''server {
+                server_name app.example.net;
+                location /.well-known/acme-challenge/ { root /var/www/acme; }
+                location / { return 308 https://app.example.net$request_uri; }
+            }''')
+            self.assertTrue(parse_nginx_file(path)[0].is_redirect_only)
+
+    def test_redirect_does_not_hide_other_application_locations(self):
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "site.conf"
+            for application in ('location /api { proxy_pass http://127.0.0.1:3002; }',
+                                'location /app { root /srv/application; }'):
+                path.write_text('server { location / { return 302 https://example.net; } ' + application + ' }')
+                self.assertFalse(parse_nginx_file(path)[0].is_redirect_only)
+            path.write_text('server { location / { if ($arg_x) { return 302 /login; } } }')
+            self.assertFalse(parse_nginx_file(path)[0].is_redirect_only)
+
     def test_parse_nginx_file_extracts_server_fields(self) -> None:
         with TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -47,7 +67,7 @@ class NginxParserTestCase(unittest.TestCase):
             nginx_file.write_text(
                 """
                 server {
-                    server_name ai-and-tech.com www.ai-and-tech.com;
+                    server_name redirect.example.test www.redirect.example.test;
                     return 302 https://link.me/ai.and.tech$request_uri;
                 }
                 """,

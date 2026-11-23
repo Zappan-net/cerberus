@@ -1,6 +1,7 @@
 import os
 import sys
 import unittest
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(__file__)), "src"))
@@ -47,6 +48,17 @@ class NotifyTestCase(unittest.TestCase):
         self.assertIn(b"Content-Type: text/html", payload)
         self.assertIn(b"Content-Transfer-Encoding: base64", payload)
         self.assertIn(b"Importance: high", payload)
+
+    def test_subject_distinguishes_successive_alerts(self) -> None:
+        mailer = Mailer({"notifications": {"email_to": [], "email_from": "ops@example.net"}}, dry_run=True)
+        when = datetime(2026, 11, 23, 15, 30, tzinfo=timezone.utc)
+        subjects = []
+        for instant in (when, when + timedelta(hours=1)):
+            event = NotificationEvent("test", "same", "[Cerberus][HIGH] Alert", "Test", instant, {})
+            subject = str(mailer._build_message(event)["Subject"])
+            self.assertEqual(subject, f"{event.subject} [{instant.astimezone():%Y-%m-%d %H:%M:%S %z}]")
+            subjects.append(subject)
+        self.assertNotEqual(*subjects)
 
     def test_send_via_smtp_starttls_and_login(self) -> None:
         config = {
@@ -251,6 +263,12 @@ class NotifyTestCase(unittest.TestCase):
                     "analysis_status": "completed",
                     "advisory_severity": "HIGH",
                     "contextual_risk": "LOW",
+                    "exposure": "not_observed",
+                    "impact": "denial_of_service",
+                    "action_priority": "scheduled",
+                    "operator_summary": "<script>alert(1)</script>",
+                    "environment_assessment": "<b>local only</b>",
+                    "risk_rationale": "<img src=x>",
                     "confidence": 0.82,
                     "dependency_scope": "runtime",
                     "summary": "<script>alert(1)</script>",
@@ -276,10 +294,52 @@ class NotifyTestCase(unittest.TestCase):
 
         html = self._html_part(mailer._build_message(event))
 
-        self.assertIn("AI-assisted contextual analysis", html)
+        self.assertIn("Codex triage report", html)
         self.assertIn("&lt;script&gt;alert(1)&lt;/script&gt;", html)
         self.assertNotIn("<script>alert(1)</script>", html)
         self.assertIn("Estimated contextual risk", html)
+        self.assertIn("Verdict", html)
+        self.assertIn("Current environment", html)
+        self.assertIn("Exposure", html)
+        self.assertIn("not observed", html)
+        self.assertIn("Action priority", html)
+
+    def test_vulnerability_html_renders_codex_failure_diagnostic(self) -> None:
+        config = {
+            "notifications": {
+                "email_to": ["ops@example.net"],
+                "email_from": "no-reply@example.net",
+                "method": "sendmail",
+                "sendmail_path": "/usr/sbin/sendmail",
+            }
+        }
+        mailer = Mailer(config=config, dry_run=True)
+        event = NotificationEvent(
+            category="vulnerability",
+            fingerprint="test-vuln",
+            subject="[Cerberus][HIGH][host] app.example.net lodash GHSA-test",
+            body="Hostname: host\nSeverity: HIGH\nSummary: test",
+            created_at=None,
+            metadata={
+                "severity": "HIGH",
+                "vhost": "app.example.net",
+                "stack": "nodejs",
+                "ecosystem": "npm",
+                "dependency": "lodash",
+                "version": "4.17.23",
+                "vuln_id": "GHSA-test",
+                "codex_analysis": {
+                    "analysis_status": "schema_invalid",
+                    "reason": "<bad json>",
+                },
+            },
+        )
+
+        html = self._html_part(mailer._build_message(event))
+
+        self.assertIn("Codex triage report", html)
+        self.assertIn("Codex analysis was attempted", html)
+        self.assertIn("&lt;bad json&gt;", html)
 
     def test_digest_html_renders_advisory_summaries_and_breakdown(self) -> None:
         config = {
@@ -300,7 +360,7 @@ class NotifyTestCase(unittest.TestCase):
                 "Summary: new or changed findings were grouped to avoid flooding the destination mailbox.\n\n"
                 "HIGH (1)\nRecommendation: prioritize.\n"
             ),
-            created_at=type("T", (), {"isoformat": lambda self: "2026-04-10T12:00:00+00:00"})(),
+            created_at=datetime(2026, 4, 10, 12, tzinfo=timezone.utc),
             metadata={
                 "severity": "HIGH",
                 "hostname": "host",
