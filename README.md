@@ -49,7 +49,7 @@ The project is split into explicit layers:
    Applies readable heuristics on filesystem markers and upstream names. The logic is intentionally explicit, not opaque.
 3. `collectors.py`
    Collects dependency versions from common manifests and environments:
-   `composer.lock`, `composer.json`, `package-lock.json`, `npm-shrinkwrap.json`, `package.json`, `requirements.txt`, `poetry.lock`, `.venv/bin/python`, `venv/bin/python`, `gitea --version`, and `VERSION`.
+   `composer.lock`, `composer.json`, `package-lock.json`, `npm-shrinkwrap.json`, `package.json`, `requirements.txt`, `poetry.lock`, installed Python distribution metadata in local virtual environments, `gitea --version`, and `VERSION`.
 4. `audits.py`
    Runs native audit tools when available, under a timeout. For npm projects, Cerberus runs both `npm audit --omit=dev` and full `npm audit` so production/runtime findings stay distinct from development/build findings. Composer and Python projects use `composer audit` and `pip-audit`. If a tool is missing or the project is incomplete, Cerberus keeps going and falls back to the local advisory cache.
 5. `cve_db.py`
@@ -305,7 +305,7 @@ tree/lockfile skips npm dependency auditing as not applicable; this does not aud
 the Node runtime itself. Projects declaring dependencies still warn if npm or the
 required lockfile is missing. Missing `pip-audit` is reported as an unavailable
 native audit, not a command that ran and failed; local advisory matching continues.
-- `scanner.command_timeout_seconds`: timeout for `npm audit`, `composer audit`, `pip-audit`, and `pip freeze`.
+- `scanner.command_timeout_seconds`: timeout for native dependency audits. Offline scans skip these network-dependent commands and use local inventory and cached advisories.
 - `scanner.repeated_failure_threshold`: number of identical failures before an alert is sent.
 - Repeated audit command failures are reported as scanner pipeline incidents, not CVE findings. When several vhosts point to the same project root and the same audit command fails, Cerberus groups them into one notification with `Affected targets`.
 - `notifications.method`: `sendmail` or `smtp`.

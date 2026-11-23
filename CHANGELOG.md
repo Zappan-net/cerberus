@@ -1,6 +1,13 @@
 # Changelog
 
-## Unreleased
+## 0.1.4
+
+- Collect Python packages from static distribution metadata instead of executing application virtual environments as the service user.
+- Persist scan mail in SQLite until the transport accepts it. A failed send or an interrupted batch is retried on the next non-dry run. Persistent transport failures can delay subsequent scans; a crash immediately after acceptance may duplicate a message.
+- Parse package-grouped Composer advisories and modern pip-audit reports, and isolate dependency scanner errors per application.
+- Preserve npm inventory scope in cached findings and skip network-dependent native audits when offline.
+
+## Previous changes (through 0.1.3)
 
 ### Added
 

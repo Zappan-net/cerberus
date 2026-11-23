@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import logging
 import re
+from dataclasses import replace
+from tempfile import NamedTemporaryFile
 from pathlib import Path
 from typing import Dict, List
 
@@ -40,7 +42,7 @@ def _local_db_issues(
             issues.append(
                 AuditIssue(
                     dependency=dependency,
-                    vulnerability=vulnerability,
+                    vulnerability=replace(vulnerability, audit_scope=dependency.audit_scope or vulnerability.audit_scope),
                     detection_method="osv-cache",
                 )
             )
@@ -90,6 +92,8 @@ def _scan_node(stack: StackMatch, cve_db: CVEDatabase, timeout: int, allow_netwo
     issues = _local_db_issues(dependencies, cve_db, allow_network)
     audit_commands = []
     root = Path(stack.root_path) if stack.root_path else None
+    if not allow_network:
+        return StackScanResult(stack, dependencies, _dedupe_issues(issues), failures)
     if root and command_exists("npm") and (root / "package-lock.json").exists():
         LOGGER.info("Running npm audit in %s", root)
         result = run_command(["npm", "audit", "--json", "--omit=dev"], timeout=timeout, cwd=root)
@@ -168,7 +172,7 @@ def _parse_npm_audit(payload: Dict, dependencies: List[Dependency], audit_scope:
                         # Resolve per-advisory repair metadata from structured sources.
                         fixed_version=None,
                         affected_range=affected_range,
-                        audit_scope=audit_scope,
+                        audit_scope=dependency.audit_scope or audit_scope,
                         fix_is_semver_major=fix_is_semver_major,
                         references=[str(entry.get("url", ""))] if entry.get("url") else [],
                         aliases=[canonical_advisory_id(str(vuln_id), [])],
@@ -219,16 +223,17 @@ def _scan_composer(stack: StackMatch, cve_db: CVEDatabase, timeout: int, allow_n
     issues = _local_db_issues(dependencies, cve_db, allow_network)
     audit_commands = []
     root = Path(stack.root_path) if stack.root_path else None
+    if not allow_network:
+        return StackScanResult(stack, dependencies, _dedupe_issues(issues), failures)
     if root and command_exists("composer") and (root / "composer.lock").exists():
         LOGGER.info("Running composer audit in %s", root)
-        result = run_command(["composer", "audit", "--format=json", "--locked"], timeout=timeout, cwd=root)
+        result = run_command(["composer", "--no-plugins", "--no-scripts", "audit", "--format=json", "--locked"], timeout=timeout, cwd=root)
         audit_commands.append("composer audit --format=json --locked")
-        if result.returncode in (0, 1):
+        if result.returncode in (0, 1, 2, 3):
             try:
-                payload = json.loads(result.stdout or "{}")
-            except json.JSONDecodeError:
-                payload = {}
-            issues.extend(_parse_composer_audit(payload, dependencies))
+                issues.extend(_parse_composer_audit(json.loads(result.stdout), dependencies))
+            except (ValueError, KeyError, TypeError, AttributeError):
+                failures.append(ScanFailure(scope="php-composer", reason="composer_audit_failed", detail="Invalid audit JSON"))
         else:
             failures.append(ScanFailure(scope="php-composer", reason="composer_audit_failed", detail=result.stderr.strip()))
     else:
@@ -246,8 +251,15 @@ def _scan_composer(stack: StackMatch, cve_db: CVEDatabase, timeout: int, allow_n
 def _parse_composer_audit(payload: Dict, dependencies: List[Dependency]) -> List[AuditIssue]:
     issues = []
     name_to_dependency = {dep.name: dep for dep in dependencies}
-    for advisory in payload.get("advisories", []):
-        package_name = advisory.get("packageName")
+    groups = payload["advisories"]
+    records = groups.items() if isinstance(groups, dict) else [(None, groups)]
+    def advisories():
+        for package, group in records:
+            for advisory in group.values() if isinstance(group, dict) else group:
+                yield package, advisory
+
+    for package, advisory in advisories():
+        package_name = advisory.get("packageName") or package
         dependency = name_to_dependency.get(package_name)
         if not dependency:
             continue
@@ -281,24 +293,35 @@ def _scan_python(stack: StackMatch, cve_db: CVEDatabase, timeout: int, allow_net
     issues = _local_db_issues(dependencies, cve_db, allow_network)
     audit_commands = []
     root = Path(stack.root_path) if stack.root_path else None
-    requirements_path = root / "requirements.txt" if root else None
-    if requirements_path and requirements_path.exists() and command_exists("pip-audit"):
-        LOGGER.info("Running pip-audit against %s", requirements_path)
-        result = run_command(["pip-audit", "-r", str(requirements_path), "--format", "json"], timeout=timeout, cwd=root)
-        audit_commands.append(f"pip-audit -r {requirements_path} --format json")
+    if not allow_network:
+        return StackScanResult(stack, dependencies, _dedupe_issues(issues), failures)
+    if dependencies and command_exists("pip-audit"):
+        LOGGER.info("Running pip-audit against Python inventory for %s", root)
+        # Never hand pip an application-controlled requirements file (URLs, options
+        # and build backends can execute code). Audit only static inventory pins.
+        with NamedTemporaryFile(mode="w", suffix=".txt") as pins:
+            for dep in dependencies:
+                if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", dep.name) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.+!-]*", dep.version):
+                    pins.write(f"{dep.name}=={dep.version}\n")
+            pins.flush()
+            result = run_command(["pip-audit", "--disable-pip", "--no-deps", "-r", pins.name, "--format", "json"], timeout=timeout)
+        audit_commands.append("pip-audit --disable-pip --no-deps (inventory pins)")
         if result.returncode in (0, 1):
             payload = result.json_stdout()
+            if isinstance(payload, dict):
+                payload = payload.get("dependencies")
             if isinstance(payload, list):
                 issues.extend(_parse_pip_audit(payload, dependencies))
+            else:
+                failures.append(ScanFailure(scope="python", reason="pip_audit_failed", detail="Invalid audit JSON"))
         else:
             failures.append(ScanFailure(scope="python", reason="pip_audit_failed", detail=result.stderr.strip()))
     else:
-        LOGGER.info("Skipping pip-audit for %s: pip-audit missing or requirements.txt absent", stack.root_path or "unknown")
         missing = []
         if not command_exists("pip-audit"):
             missing.append("pip-audit executable not found in service PATH")
-        if not requirements_path or not requirements_path.exists():
-            missing.append("requirements.txt absent")
+        if not dependencies:
+            missing.append("no pinned dependencies in inventory")
         failures.append(ScanFailure(scope="python", reason="pip_audit_unavailable", detail="; ".join(missing)))
     return StackScanResult(
         stack=stack,
@@ -323,7 +346,8 @@ def _parse_pip_audit(payload: List[Dict], dependencies: List[Dependency]) -> Lis
                     detection_method="pip-audit",
                     vulnerability=_build_runtime_vulnerability(
                         dependency,
-                        vuln_id=canonical_advisory_id(str(vuln.get("id", dependency.name)), []),
+                        vuln_id=canonical_advisory_id(str(vuln.get("id", dependency.name)), vuln.get("aliases")),
+                        aliases=vuln.get("aliases") or [],
                         severity=strongest_severity(vuln.get("severity")),
                         summary=str(vuln.get("description", "pip-audit finding")),
                         details=str(vuln.get("fix_versions", "")),

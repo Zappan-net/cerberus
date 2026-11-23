@@ -172,6 +172,7 @@ class RepairTests(unittest.TestCase):
                        source_path=self.dep.source, vuln_id=self.vuln.vuln_id, severity="HIGH", fixed_version=None)
         state.begin_scan()
         self.assertTrue(state.should_alert("one", payload))
+        state.record_delivery([state.decision_ids["one"]], "success", "test", "accepted")
         enriched = dict(payload, fix_details=self.vuln.fix_details, fixed_version=self.vuln.fixed_version)
         self.assertFalse(state.should_alert("one", enriched))
         record = state.notification_history()[0]

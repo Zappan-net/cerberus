@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from email.parser import BytesHeaderParser
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Union
 
@@ -62,6 +63,7 @@ def collect_node_dependencies(stack: StackMatch) -> Tuple[List[Dependency], List
                                 source=str(manifest),
                                 source_line=_find_line_number(manifest, ['"{}"'.format(name), str(version)]),
                                 locations=[package_path],
+                                audit_scope="development" if metadata.get("dev") is True else "runtime",
                             )
                         )
             else:
@@ -75,6 +77,7 @@ def collect_node_dependencies(stack: StackMatch) -> Tuple[List[Dependency], List
                                 version=str(version),
                                 source=str(manifest),
                                 source_line=_find_line_number(manifest, ['"{}"'.format(name), str(version)]),
+                                audit_scope="development" if metadata.get("dev") is True else "runtime",
                             )
                         )
     elif package_json_path.exists():
@@ -89,6 +92,7 @@ def collect_node_dependencies(stack: StackMatch) -> Tuple[List[Dependency], List
                                 name=name,
                                 version=version.lstrip("^~<>= "),
                                 source=str(package_json_path),
+                                audit_scope="development" if section == "devDependencies" else "runtime",
                                 source_line=_find_line_number(package_json_path, ['"{}"'.format(name)]),
                             )
                         )
@@ -199,26 +203,16 @@ def collect_python_dependencies(stack: StackMatch, timeout: int) -> Tuple[List[D
                 current_name = None
                 current_version = None
                 current_line = None
-    venv_candidates = [root / ".venv/bin/python", root / "venv/bin/python"]
-    for python_bin in venv_candidates:
-        if python_bin.exists():
-            result = run_command([str(python_bin), "-m", "pip", "freeze"], timeout=timeout, cwd=root)
-            if result.returncode == 0:
-                for line in result.stdout.splitlines():
-                    parsed = _parse_requirement_line(line)
-                    if parsed:
-                        name, version = parsed
-                        dependencies.append(
-                            Dependency(
-                                ecosystem="PyPI",
-                                name=name,
-                                version=version,
-                                source=str(python_bin),
-                                source_line=None,
-                            )
-                        )
-            else:
-                failures.append(ScanFailure(scope="python", reason="pip_freeze_failed", detail=result.stderr.strip()))
+    for venv in (root / ".venv", root / "venv"):
+        if venv.is_dir():
+            for path in sorted(venv.glob("lib/python*/site-packages/*.dist-info/METADATA")):
+                if path.is_symlink() or not path.is_file() or venv.resolve() not in path.resolve().parents:
+                    continue
+                with path.open("rb") as stream:
+                    headers = BytesHeaderParser().parsebytes(stream.read(65536))
+                name, version = headers.get("Name"), headers.get("Version")
+                if name and version:
+                    dependencies.append(Dependency("PyPI", name, version, str(path)))
             break
     if not dependencies:
         failures.append(ScanFailure(scope="python", reason="no_pinned_dependencies_found", detail=stack.root_path))
@@ -267,4 +261,6 @@ def _dedupe_dependencies(dependencies: List[Dependency]) -> List[Dependency]:
         key = (dependency.ecosystem, dependency.name.lower(), dependency.version)
         if key not in deduped:
             deduped[key] = dependency
+        elif dependency.audit_scope == "runtime":
+            deduped[key].audit_scope = "runtime"
     return list(deduped.values())

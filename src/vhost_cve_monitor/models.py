@@ -59,6 +59,7 @@ class Dependency:
     source: str
     source_line: Optional[int] = None
     locations: List[str] = field(default_factory=list)
+    audit_scope: Optional[str] = None
 
 
 @dataclass

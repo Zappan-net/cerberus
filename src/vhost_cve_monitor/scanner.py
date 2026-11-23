@@ -27,7 +27,7 @@ from .codex_analysis import CodexAnalysisRunner, codex_analysis_enabled
 from .config import validate_config
 from .cve_db import CVEDatabase
 from .fixed_versions import fix_description
-from .models import AuditIssue, NotificationEvent, ScanFailure, StackMatch, VhostScanResult
+from .models import AuditIssue, NotificationEvent, ScanFailure, StackMatch, StackScanResult, VhostScanResult
 from .nginx_parser import load_vhosts
 from .notify import Mailer
 from .notify import NotificationDeliveryError
@@ -281,19 +281,24 @@ class CerberusScanner:
     ) -> Tuple[List[VhostScanResult], List[NotificationEvent]]:
         LOGGER.info("Starting scan cycle")
         self.state.begin_scan(dry_run=self.dry_run)
+        if not self.dry_run:
+            for outbox_id, pending in self.state.pending_notifications():
+                self._send_notification(pending, outbox_id)
         if force_notify:
             LOGGER.warning("Forced notification mode enabled; vulnerability deduplication state will not be changed")
         now, results, issue_occurrences, failure_notifications = self._collect_scan_data(only_vhosts=only_vhosts)
         self.state.replace_current_findings(self._current_findings_snapshot(issue_occurrences), scanned_at=now.isoformat())
         notifications = self._build_issue_notifications(issue_occurrences, force_notify=force_notify) + failure_notifications
         LOGGER.info("Prepared %s notifications", len(notifications))
-        for notification in self._prepare_notifications_for_delivery(notifications):
+        batch = self._prepare_notifications_for_delivery(notifications)
+        queued = [(None, item) for item in batch] if self.dry_run else self.state.enqueue_notifications(batch)
+        for outbox_id, notification in queued:
             LOGGER.info("Sending %s notification: %s", notification.category, notification.subject)
-            self._send_notification(notification)
+            self._send_notification(notification, outbox_id)
         LOGGER.info("Scan cycle completed")
         return results, notifications
 
-    def _send_notification(self, event: NotificationEvent) -> None:
+    def _send_notification(self, event: NotificationEvent, outbox_id=None) -> None:
         self.state.dry_run = self.dry_run
         decision_ids = event.metadata.get("decision_ids") or []
         if not decision_ids:
@@ -314,7 +319,7 @@ class CerberusScanner:
         except Exception as exc:
             self.state.record_delivery(decision_ids, "failure", notification_id, type(exc).__name__)
             raise
-        self.state.record_delivery(decision_ids, "success", notification_id, "accepted_by_transport")
+        self.state.record_delivery(decision_ids, "success", notification_id, "accepted_by_transport", outbox_id)
 
     def _collect_scan_data(self, only_vhosts: Optional[List[str]] = None) -> Tuple[datetime, List[VhostScanResult], List[Dict], List[NotificationEvent]]:
         now = datetime.now(timezone.utc)
@@ -353,12 +358,13 @@ class CerberusScanner:
                     vhost.primary_server_name,
                     stack.root_path or "unknown",
                 )
-                stack_result = scan_stack(
-                    stack=stack,
-                    cve_db=self.cve_db,
-                    timeout=self.timeout,
-                    allow_network=self.allow_network,
-                )
+                try:
+                    stack_result = scan_stack(stack=stack, cve_db=self.cve_db, timeout=self.timeout,
+                                              allow_network=self.allow_network)
+                except Exception as exc:
+                    LOGGER.exception("Dependency audit failed for %s at %s", stack.stack_name, stack.root_path)
+                    stack_result = StackScanResult(stack, failures=[
+                        ScanFailure(stack.stack_name, "stack_audit_failed", type(exc).__name__)])
                 stack_results.append(stack_result)
             for stack_result in stack_results + runtime_results:
                 stack = stack_result.stack

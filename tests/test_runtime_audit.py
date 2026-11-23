@@ -134,8 +134,8 @@ class RuntimeAuditTests(unittest.TestCase):
         with patch("vhost_cve_monitor.runtime_audit.urllib.request.urlopen", side_effect=urlopen) as mocked:
             records = self.auditor._python_feed("3.11.7")
             self.assertEqual({item["id"] for item in records}, {"PSF-2026-46", "CVE-2026-115557"})
-            self.assertIn("v3.11.7", mocked.call_args_list[0].args[0].full_url)
-            self.assertEqual(json.loads(mocked.call_args_list[2].args[0].data), {"commit": "b" * 40})
+            self.assertIn("v3.11.7", mocked.call_args_list[0][0][0].full_url)
+            self.assertEqual(json.loads(mocked.call_args_list[2][0][0].data), {"commit": "b" * 40})
         self.auditor.allow_network = False
         with patch("vhost_cve_monitor.runtime_audit.urllib.request.urlopen", side_effect=AssertionError("network")):
             self.assertEqual(self.auditor._python_feed("3.11.7"), records)
@@ -314,6 +314,7 @@ class RuntimeAuditTests(unittest.TestCase):
         self.assertIn("CRITICAL", digest.subject)
         self.assertIn("Runtime inventory", _html_body(digest))
         self.assertIn("Runtime inventory", _html_body(events[0]))
+        scanner.state.record_delivery(list(scanner.state.decision_ids.values()), "success", "test", "accepted")
         self.assertFalse(scanner._build_issue_notifications(occurrences))
 
     def test_codex_context_optional_and_cache_invalidation(self):

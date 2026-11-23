@@ -4,11 +4,11 @@ import sys
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(__file__)), "src"))
 
-from vhost_cve_monitor.audits import _scan_node
+from vhost_cve_monitor.audits import _scan_node, _scan_composer
 from vhost_cve_monitor.audits import _npm_dependency_audit_not_applicable, _scan_python
 from vhost_cve_monitor.audits import _normalize_npm_vuln_id
 from vhost_cve_monitor.audits import _parse_composer_audit
@@ -19,13 +19,51 @@ from vhost_cve_monitor.subprocess_utils import CommandResult
 
 
 class AuditsTestCase(unittest.TestCase):
+    def test_offline_uses_inventory_scope_without_native_audits(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            lock = root / "package-lock.json"
+            lock.write_text(json.dumps({"packages": {"node_modules/tool": {"dev": True, "version": "1"}}}))
+            (root / "composer.lock").write_text("{}")
+            (root / "requirements.txt").write_text("tool==1")
+            dep = Dependency("npm", "tool", "1", str(lock))
+            advisory = _parse_npm_audit({"vulnerabilities": {"tool": {"via": [{"source": 123}]}}}, [dep])[0].vulnerability
+            db = Mock()
+            db.ensure_fresh.return_value = [advisory]
+            with patch("vhost_cve_monitor.audits.run_command") as run:
+                node = _scan_node(StackMatch("nodejs", "high", [], tmp), db, 1, False)
+                _scan_python(StackMatch("python", "high", [], tmp), db, 1, False)
+                _scan_composer(StackMatch("php-composer", "high", [], tmp), db, 1, False)
+            run.assert_not_called()
+            self.assertEqual(node.issues[0].vulnerability.audit_scope, "development")
+            self.assertEqual(advisory.audit_scope, "runtime")
+
+    def test_modern_pip_output_and_static_venv(self):
+        with TemporaryDirectory() as tmp:
+            metadata = Path(tmp) / ".venv/lib/python3.11/site-packages/demo-1.dist-info/METADATA"
+            metadata.parent.mkdir(parents=True)
+            metadata.write_text("Name: demo\nVersion: 1\n\n")
+            payload = {"dependencies": [{"name": "demo", "version": "1", "vulns": [{"id": "PYSEC-2026-1"}]}], "fixes": []}
+            with patch("vhost_cve_monitor.collectors.run_command", side_effect=AssertionError("application interpreter")), \
+                 patch("vhost_cve_monitor.audits.command_exists", return_value=True), \
+                 patch("vhost_cve_monitor.audits.run_command", return_value=CommandResult([], 1, json.dumps(payload), "")):
+                result = _scan_python(StackMatch("python", "high", [], tmp), Mock(ensure_fresh=lambda *a, **k: []), 1, True)
+            self.assertEqual(result.issues[0].dependency.source, str(metadata))
+            self.assertEqual(result.issues[0].vulnerability.vuln_id, "PYSEC-2026-1")
+
+    def test_composer_advisories_grouped_by_package(self):
+        dep = Dependency("Packagist", "vendor/sample", "1", "composer.lock")
+        advisories = {"vendor/sample": [{"advisoryId": "PKSA-one"}, {"advisoryId": "PKSA-two"}]}
+        issues = _parse_composer_audit({"advisories": advisories}, [dep])
+        self.assertEqual([issue.vulnerability.vuln_id for issue in issues], ["PKSA-one", "PKSA-two"])
+
     def test_dependency_free_node_project_does_not_warn_or_run_audit(self):
         with TemporaryDirectory() as tmp:
             (Path(tmp) / "package.json").write_text('{"name":"example-api","type":"module"}')
             stack = StackMatch("nodejs", "high", [], tmp)
             with patch("vhost_cve_monitor.audits._local_db_issues", return_value=[]), \
                  patch("vhost_cve_monitor.audits.run_command") as run:
-                result = _scan_node(stack, None, 1, False)
+                result = _scan_node(stack, None, 1, True)
             self.assertEqual(result.failures, [])
             run.assert_not_called()
 
@@ -38,7 +76,7 @@ class AuditsTestCase(unittest.TestCase):
             (root / "package.json").write_text('{"dependencies":{"example":"1.0.0"}}')
             with patch("vhost_cve_monitor.audits._local_db_issues", return_value=[]), \
                  patch("vhost_cve_monitor.audits.command_exists", return_value=True):
-                result = _scan_node(StackMatch("nodejs", "high", [], tmp), None, 1, False)
+                result = _scan_node(StackMatch("nodejs", "high", [], tmp), None, 1, True)
             self.assertEqual(result.failures[0].reason, "npm_audit_unavailable")
             self.assertIn("package-lock.json absent", result.failures[0].detail)
 
@@ -57,8 +95,8 @@ class AuditsTestCase(unittest.TestCase):
             (Path(tmp) / "requirements.txt").write_text("")
             with patch("vhost_cve_monitor.audits.collect_python_dependencies", return_value=([], [])), \
                  patch("vhost_cve_monitor.audits.command_exists", return_value=False):
-                result = _scan_python(StackMatch("python", "high", [], tmp), None, 1, False)
-            self.assertEqual(result.failures[0].detail, "pip-audit executable not found in service PATH")
+                result = _scan_python(StackMatch("python", "high", [], tmp), None, 1, True)
+            self.assertIn("pip-audit executable not found in service PATH", result.failures[0].detail)
 
     def test_npm_advisory_severity_overrides_package_aggregate(self):
         dependencies = [Dependency("npm", "sample", "1.0", "/srv/app/package-lock.json", 1)]
@@ -233,7 +271,7 @@ class AuditsTestCase(unittest.TestCase):
             with patch("vhost_cve_monitor.audits.collect_node_dependencies", return_value=(dependencies, [])):
                 with patch("vhost_cve_monitor.audits.command_exists", return_value=True):
                     with patch("vhost_cve_monitor.audits.run_command", side_effect=fake_run):
-                        result = _scan_node(StackMatch("nodejs", "high", [], str(root)), EmptyDb(), timeout=1, allow_network=False)
+                        result = _scan_node(StackMatch("nodejs", "high", [], str(root)), EmptyDb(), timeout=1, allow_network=True)
 
             scopes = {issue.dependency.name: issue.vulnerability.audit_scope for issue in result.issues}
             self.assertEqual(scopes["nodemailer"], "runtime")

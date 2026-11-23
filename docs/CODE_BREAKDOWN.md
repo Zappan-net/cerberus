@@ -417,14 +417,13 @@ Supported inputs:
 
 - `requirements.txt`
 - `poetry.lock`
-- `venv/bin/python -m pip freeze`
-- `.venv/bin/python -m pip freeze`
+- installed distribution metadata under `venv` or `.venv`
 
 Behavior:
 
 - pinned `requirements.txt` lines are parsed only when they look like `package==version`
 - Poetry lock parsing is line-based and intentionally simple
-- if a local virtualenv exists, Cerberus tries `pip freeze`
+- reads distribution names and versions without starting the application interpreter
 
 Limit:
 
@@ -634,7 +633,7 @@ For every supported stack:
 #### Python
 
 - collects dependencies from requirements, Poetry lock, or local virtualenv
-- runs `pip-audit -r requirements.txt --format json` when possible
+- when online, runs pip-audit on validated inventory pins with pip and dependency resolution disabled
 
 #### Gitea
 

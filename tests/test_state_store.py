@@ -14,6 +14,7 @@ class StateStoreTestCase(unittest.TestCase):
             store = StateStore(tmp + "/state.db")
             payload = {"severity": "HIGH", "vuln": "CVE-0001"}
             self.assertTrue(store.should_alert("issue:test", payload))
+            store.record_delivery([store.decision_ids["issue:test"]], "success", "test", "accepted")
             self.assertFalse(store.should_alert("issue:test", payload))
             self.assertTrue(store.should_alert("issue:test", {"severity": "CRITICAL", "vuln": "CVE-0001"}))
 
@@ -49,6 +50,7 @@ class StateStoreTestCase(unittest.TestCase):
             )
 
             self.assertEqual(store.alert_decision("issue:test", first_payload), (True, "new"))
+            store.record_delivery([store.decision_ids["issue:test"]], "success", "test", "accepted")
             self.assertEqual(store.alert_decision("issue:test", enriched_payload), (False, "progressive_enrichment"))
             self.assertEqual(store.alert_decision("issue:test", enriched_payload), (False, "unchanged"))
 
@@ -85,6 +87,7 @@ class StateStoreTestCase(unittest.TestCase):
             )
 
             self.assertEqual(store.alert_decision("issue:ghsa", ghsa_payload), (True, "new"))
+            store.record_delivery([store.decision_ids["issue:ghsa"]], "success", "test", "accepted")
             self.assertEqual(store.alert_decision("issue:cve", cve_payload), (False, "progressive_enrichment"))
             self.assertEqual(store.alert_decision("issue:cve", cve_payload), (False, "unchanged"))
 
@@ -118,6 +121,7 @@ class StateStoreTestCase(unittest.TestCase):
             )
 
             self.assertEqual(store.alert_decision("issue:nanoid-ghsa", development_payload), (True, "new"))
+            store.record_delivery([store.decision_ids["issue:nanoid-ghsa"]], "success", "test", "accepted")
             self.assertEqual(store.alert_decision("issue:nanoid-cve", runtime_payload), (True, "changed"))
 
     def test_repeated_failure_threshold(self) -> None:
@@ -127,6 +131,7 @@ class StateStoreTestCase(unittest.TestCase):
             self.assertFalse(store.register_failure("failure:test", payload, threshold=3))
             self.assertFalse(store.register_failure("failure:test", payload, threshold=3))
             self.assertTrue(store.register_failure("failure:test", payload, threshold=3))
+            store.record_delivery([store.decision_ids["failure:test"]], "success", "test", "accepted")
             self.assertFalse(store.register_failure("failure:test", payload, threshold=3))
 
     def test_replace_and_export_current_findings_snapshot(self) -> None:

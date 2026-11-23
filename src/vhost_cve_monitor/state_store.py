@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from .advisory_logic import advisory_ids_from_fields, normalize_severity
+from .models import NotificationEvent
 
 
 class StateStore:
@@ -29,6 +30,9 @@ class StateStore:
         with self._connect() as connection:
             connection.executescript(
                 """
+                CREATE TABLE IF NOT EXISTS notification_outbox (
+                    id INTEGER PRIMARY KEY, event_json TEXT NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS alert_state (
                     fingerprint TEXT PRIMARY KEY,
                     payload_hash TEXT NOT NULL,
@@ -170,14 +174,42 @@ class StateStore:
             self.decision_ids[fingerprint] = self._journal(connection, fingerprint,
                 json.loads(previous.get("original_payload_json", previous["payload_json"])) if previous else None, payload, reason, True)
 
-    def record_delivery(self, decision_ids: List[int], phase: str, notification_id: str, reason: str) -> None:
+    def enqueue_notifications(self, events):
+        queued = []
         with self._connect() as connection:
+            for event in events:
+                data = dict(vars(event), created_at=event.created_at.isoformat())
+                cursor = connection.execute("INSERT INTO notification_outbox (event_json) VALUES (?)",
+                                            (json.dumps(data),))
+                queued.append((cursor.lastrowid, event))
+        return queued
+
+    def pending_notifications(self):
+        with self._connect() as connection:
+            for row in connection.execute("SELECT id, event_json FROM notification_outbox ORDER BY id").fetchall():
+                data = json.loads(row["event_json"])
+                data["created_at"] = datetime.fromisoformat(data["created_at"])
+                yield row["id"], NotificationEvent(**data)
+
+    def record_delivery(self, decision_ids: List[int], phase: str, notification_id: str, reason: str,
+                        outbox_id=None) -> None:
+        with self._connect() as connection:
+            if outbox_id is not None and phase == "success" and not self.dry_run:
+                connection.execute("DELETE FROM notification_outbox WHERE id = ?", (outbox_id,))
             for decision_id in set(decision_ids):
                 row = connection.execute("SELECT * FROM notification_journal WHERE id = ? AND phase = 'decision'",
                                          (decision_id,)).fetchone()
                 if row:
                     self._journal(connection, row["fingerprint"], json.loads(row["before_json"]) if row["before_json"] else None,
                                   json.loads(row["after_json"]), reason, True, phase, decision_id, notification_id)
+                    if phase == "success" and not row["dry_run"]:
+                        payload = json.loads(row["after_json"])
+                        if row["reason"] == "failure_threshold_reached":
+                            payload.pop("failure_count")
+                            connection.execute("UPDATE repeated_failures SET last_alerted_hash = ? WHERE scope = ?",
+                                               (self.stable_hash(payload), row["fingerprint"]))
+                        elif row["reason"] not in ("explicit_notification", "forced") and row["notify"]:
+                            self._save_alert(connection, row["fingerprint"], payload, row["reason"], row["recorded_at"])
 
     def notification_history(self, limit=100, vhost=None, advisory=None, scan_id=None) -> List[Dict]:
         if not 1 <= limit <= 10000:
@@ -264,27 +296,21 @@ class StateStore:
             self.decision_ids[fingerprint] = self._journal(connection, fingerprint,
                 before,
                 payload, reason, should_alert)
-            if self.dry_run:
-                return should_alert, reason
-            if row:
-                connection.execute(
-                    """
-                    UPDATE alert_state
-                    SET payload_hash = ?, payload_json = ?, last_reason = ?, last_seen_at = ?
-                    WHERE fingerprint = ?
-                    """,
-                    (payload_hash, payload_json, reason, now, fingerprint),
-                )
-            else:
-                connection.execute(
-                    """
-                    INSERT INTO alert_state (fingerprint, payload_hash, payload_json, last_reason, last_seen_at, first_seen_at)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                    """,
-                    (fingerprint, payload_hash, payload_json, reason, now, first_seen_at),
-                )
-            self._record_alert_history(connection, equivalence_key, fingerprint, payload_hash, payload_json, reason, now, first_seen_at)
+            if not self.dry_run and not should_alert:
+                self._save_alert(connection, fingerprint, payload, reason, now, first_seen_at)
             return should_alert, reason
+
+    def _save_alert(self, connection, fingerprint, payload, reason, now, first_seen_at=None):
+        payload_hash = self.stable_hash(payload)
+        payload_json = json.dumps(payload, sort_keys=True)
+        connection.execute("""
+            INSERT INTO alert_state (fingerprint, payload_hash, payload_json, last_reason, last_seen_at, first_seen_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(fingerprint) DO UPDATE SET payload_hash=excluded.payload_hash,
+                payload_json=excluded.payload_json, last_reason=excluded.last_reason, last_seen_at=excluded.last_seen_at
+            """, (fingerprint, payload_hash, payload_json, reason, now, first_seen_at or now))
+        self._record_alert_history(connection, self._alert_equivalence_key(payload), fingerprint,
+                                   payload_hash, payload_json, reason, now, first_seen_at or now)
 
     @staticmethod
     def _alert_update_reason(previous_json: str, payload: Dict) -> str:
@@ -474,7 +500,6 @@ class StateStore:
             if self.dry_run:
                 return notify
             if not row:
-                last_alerted_hash = error_hash if threshold <= 1 else None
                 connection.execute(
                     """
                     INSERT INTO repeated_failures (scope, count, last_error_hash, last_seen_at, last_alerted_hash)
@@ -482,13 +507,7 @@ class StateStore:
                     """,
                     (scope, error_hash, now),
                 )
-                if last_alerted_hash:
-                    connection.execute(
-                        "UPDATE repeated_failures SET last_alerted_hash = ? WHERE scope = ?",
-                        (last_alerted_hash, scope),
-                    )
-                    return True
-                return False
+                return notify
             count = row["count"] + 1 if row["last_error_hash"] == error_hash else 1
             connection.execute(
                 """
@@ -498,13 +517,7 @@ class StateStore:
                 """,
                 (count, error_hash, now, scope),
             )
-            if count >= threshold and row["last_alerted_hash"] != error_hash:
-                connection.execute(
-                    "UPDATE repeated_failures SET last_alerted_hash = ? WHERE scope = ?",
-                    (error_hash, scope),
-                )
-                return True
-            return False
+            return notify
 
     def replace_current_findings(self, findings: List[Dict], scanned_at: str) -> None:
         normalized_rows = []

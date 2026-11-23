@@ -17,6 +17,7 @@ SEVERITY_ORDER = {
 STANDARD_VULN_RE = re.compile(r"(GHSA-[A-Za-z0-9-]+|CVE-\d{4}-\d+)")
 CVE_RE = re.compile(r"CVE-\d{4}-\d+")
 GHSA_RE = re.compile(r"GHSA-[A-Za-z0-9-]+")
+PACKAGE_ADVISORY_RE = re.compile(r"\b(?:PYSEC-\d{4}-\d+|PKSA-[A-Za-z0-9-]+)\b")
 SIMPLE_UPPER_BOUND_RE = re.compile(r"^\s*<?=?\s*v?([0-9][A-Za-z0-9._-]*)\s*$")
 CVSS_VECTOR_RE = re.compile(r"^CVSS:(3\.[01])/([A-Z]{1,3}:[A-Z0-9]/?)+$")
 
@@ -129,7 +130,7 @@ def advisory_ids_from_fields(
     candidates.extend(str(alias or "").strip() for alias in aliases or [])
     candidates.extend(str(reference or "").strip() for reference in references or [])
     ids: List[str] = []
-    for pattern in (CVE_RE, GHSA_RE):
+    for pattern in (CVE_RE, GHSA_RE, PACKAGE_ADVISORY_RE):
         for candidate in candidates:
             for match in pattern.findall(candidate):
                 if match not in ids:

@@ -182,6 +182,7 @@ class ScannerFindingsTestCase(unittest.TestCase):
         digest = scanner._build_digest_notification(notifications, subject_all=True)
         self.assertIn("1 alerts", digest.subject)
         self.assertIn("admin.example.net, app.example.net", digest.body)
+        scanner.state.record_delivery(list(scanner.state.decision_ids.values()), "success", "test", "accepted")
         self.assertEqual(scanner._build_issue_notifications(occurrences), [])
         scanner.state.replace_current_findings(scanner._current_findings_snapshot(occurrences), '2026-01-01T00:00:00+00:00')
         self.assertEqual(scanner.state.export_current_findings()['findings_count'], 2)
@@ -258,6 +259,7 @@ class ScannerFindingsTestCase(unittest.TestCase):
 
         forced = scanner._build_issue_notifications(occurrences, force_notify=True)
         first_normal = scanner._build_issue_notifications(occurrences)
+        scanner.state.record_delivery(list(scanner.state.decision_ids.values()), "success", "test", "accepted")
         second_normal = scanner._build_issue_notifications(occurrences)
         forced_again = scanner._build_issue_notifications(occurrences, force_notify=True)
 
@@ -443,6 +445,7 @@ class ScannerFindingsTestCase(unittest.TestCase):
         ]
 
         self.assertEqual(len(scanner._build_issue_notifications(occurrences)), 1)
+        scanner.state.record_delivery(list(scanner.state.decision_ids.values()), "success", "test", "accepted")
         self.assertEqual(len(scanner._build_issue_notifications(occurrences)), 0)
         self.assertEqual(analyzer.calls, 1)
 

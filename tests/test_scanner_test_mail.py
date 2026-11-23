@@ -2,6 +2,7 @@ import os
 import sys
 import tempfile
 import unittest
+from unittest.mock import Mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(__file__)), "src"))
 
@@ -114,6 +115,8 @@ class ScannerTestMailTestCase(unittest.TestCase):
     def test_report_internal_error_deduplicates_identical_failures(self) -> None:
         scanner = CerberusScanner(config=self.config, dry_run=True, allow_network=False)
 
+        scanner.dry_run = False
+        scanner.mailer.send = Mock()
         first = scanner.report_internal_error("scan-once", RuntimeError("boom"))
         second = scanner.report_internal_error("scan-once", RuntimeError("boom"))
 
